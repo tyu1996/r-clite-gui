@@ -1,2 +1,5 @@
 /target
 *.txt
+.DS_Store
+**/.DS_Store
+.claude/
