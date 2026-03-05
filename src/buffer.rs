@@ -21,6 +21,15 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    /// Create an unnamed buffer pre-populated with `content`.
+    pub fn from_content(content: String) -> Self {
+        Self {
+            rope: Rope::from_str(&content),
+            path: None,
+            dirty: false,
+        }
+    }
+
     /// Create an empty, unnamed buffer.
     pub fn new_empty() -> Self {
         Self {
