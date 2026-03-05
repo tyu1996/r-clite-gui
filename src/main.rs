@@ -11,6 +11,34 @@ mod ui;
 #[cfg(feature = "collab")]
 mod collab;
 
+use std::path::PathBuf;
+
+use anyhow::Result;
+use clap::Parser;
+
+/// rcte — a minimal CLI text editor.
+#[derive(Parser)]
+#[command(name = "rcte", version, about = "A minimal CLI text editor")]
+struct Cli {
+    /// File to open. Opens an empty unnamed buffer when omitted.
+    file: Option<PathBuf>,
+}
+
 fn main() {
-    // TODO: Parse CLI arguments with clap and start the editor.
+    if let Err(err) = run() {
+        eprintln!("rcte: {:#}", err);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    let cli = Cli::parse();
+
+    let buf = match cli.file {
+        Some(path) => buffer::Buffer::open(path)?,
+        None => buffer::Buffer::new_empty(),
+    };
+
+    let mut ed = editor::Editor::new(buf)?;
+    ed.run()
 }
