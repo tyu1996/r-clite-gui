@@ -30,6 +30,20 @@ pub enum Command {
     PageDown,
     /// Quit the editor (with unsaved-changes guard).
     Quit,
+    /// Insert a printable character at the cursor.
+    InsertChar(char),
+    /// Delete the character to the left of the cursor (Backspace).
+    Backspace,
+    /// Delete the character at the cursor (Delete / Del key).
+    DeleteChar,
+    /// Insert a newline and split the current line.
+    InsertNewline,
+    /// Insert a tab (rendered as spaces).
+    InsertTab,
+    /// Save the buffer to disk.
+    Save,
+    /// Save the buffer to a new path (Save As).
+    SaveAs,
     /// No-op — the key has no binding in the current context.
     None,
 }
@@ -63,6 +77,25 @@ pub fn map(event: KeyEvent) -> Command {
 
         // Quit
         KeyCode::Char('q') if ctrl => Command::Quit,
+
+        // Save / Save As
+        // Some terminals report Ctrl+Shift+S as Char('s') with CONTROL|SHIFT;
+        // others report it as Char('S') with CONTROL only (shift absorbed into
+        // the uppercase letter).  Handle both so Save As works everywhere.
+        KeyCode::Char('s') if ctrl && event.modifiers.contains(KeyModifiers::SHIFT) => {
+            Command::SaveAs
+        }
+        KeyCode::Char('S') if ctrl => Command::SaveAs,
+        KeyCode::Char('s') if ctrl => Command::Save,
+
+        // Editing
+        KeyCode::Enter => Command::InsertNewline,
+        KeyCode::Tab => Command::InsertTab,
+        KeyCode::Backspace => Command::Backspace,
+        KeyCode::Delete => Command::DeleteChar,
+
+        // Printable characters (no modifier, or shift only for uppercase/symbols)
+        KeyCode::Char(ch) if !ctrl => Command::InsertChar(ch),
 
         _ => Command::None,
     }

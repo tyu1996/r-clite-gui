@@ -3,10 +3,11 @@
 // Owns the Buffer, Terminal, and Ui instances and drives
 // the read-key → update-state → render cycle.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyCode};
 
 use crate::buffer::Buffer;
 use crate::keymap::{self, Command};
@@ -51,6 +52,11 @@ pub struct Editor {
     /// Current message bar text and the time it was posted.
     message: Option<(String, Instant)>,
 
+    // ── Save-As prompt ────────────────────────────────────────────────────────
+    /// When `Some`, the editor is collecting a filename from the user.
+    /// Keystrokes are redirected to building this string until Enter or Esc.
+    save_prompt: Option<String>,
+
     /// Set to `true` when the event loop should exit after the next render.
     should_quit: bool,
 }
@@ -73,6 +79,7 @@ impl Editor {
             quit_count: 0,
             last_quit_at: None,
             message: None,
+            save_prompt: None,
             should_quit: false,
         })
     }
@@ -129,6 +136,11 @@ impl Editor {
     // ── Input dispatch ─────────────────────────────────────────────────────────
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        // While collecting a Save-As filename, redirect all keystrokes.
+        if self.save_prompt.is_some() {
+            return self.handle_prompt_key(key);
+        }
+
         match keymap::map(key) {
             Command::MoveUp => self.move_up(),
             Command::MoveDown => self.move_down(),
@@ -139,7 +151,132 @@ impl Editor {
             Command::PageUp => self.page_up(),
             Command::PageDown => self.page_down(),
             Command::Quit => self.handle_quit()?,
+            Command::InsertChar(ch) => self.handle_insert_char(ch),
+            Command::Backspace => self.handle_backspace(),
+            Command::DeleteChar => self.handle_delete(),
+            Command::InsertNewline => self.handle_newline(),
+            Command::InsertTab => self.handle_tab(),
+            Command::Save => self.handle_save()?,
+            Command::SaveAs => self.start_save_prompt(),
             Command::None => {}
+        }
+        Ok(())
+    }
+
+    // ── Editing ───────────────────────────────────────────────────────────────
+
+    fn handle_insert_char(&mut self, ch: char) {
+        self.buffer.insert_char(self.cursor_row, self.cursor_col, ch);
+        self.cursor_col += 1;
+        self.desired_col = self.cursor_col;
+        self.scroll_to_cursor();
+    }
+
+    fn handle_backspace(&mut self) {
+        let (new_row, new_col) =
+            self.buffer.delete_char_before(self.cursor_row, self.cursor_col);
+        self.cursor_row = new_row;
+        self.cursor_col = new_col;
+        self.desired_col = new_col;
+        self.scroll_to_cursor();
+    }
+
+    fn handle_delete(&mut self) {
+        self.buffer.delete_char_at(self.cursor_row, self.cursor_col);
+        // Cursor stays at the same position; clamp in case line shrank.
+        let line_len = self.buffer.line_len(self.cursor_row);
+        if self.cursor_col > line_len {
+            self.cursor_col = line_len;
+            self.desired_col = line_len;
+        }
+        self.scroll_to_cursor();
+    }
+
+    fn handle_newline(&mut self) {
+        self.buffer.insert_newline(self.cursor_row, self.cursor_col);
+        self.cursor_row += 1;
+        self.cursor_col = 0;
+        self.desired_col = 0;
+        self.scroll_to_cursor();
+    }
+
+    fn handle_tab(&mut self) {
+        const TAB_WIDTH: usize = 4;
+        let spaces = " ".repeat(TAB_WIDTH);
+        self.buffer.insert_str(self.cursor_row, self.cursor_col, &spaces);
+        self.cursor_col += TAB_WIDTH;
+        self.desired_col = self.cursor_col;
+        self.scroll_to_cursor();
+    }
+
+    // ── Save ──────────────────────────────────────────────────────────────────
+
+    fn handle_save(&mut self) -> Result<()> {
+        if self.buffer.path.is_none() {
+            // No path yet — behave like Save As.
+            self.start_save_prompt();
+        } else {
+            self.do_save();
+        }
+        Ok(())
+    }
+
+    fn start_save_prompt(&mut self) {
+        self.save_prompt = Some(String::new());
+        self.set_message("Save as: ".to_string());
+    }
+
+    fn do_save(&mut self) {
+        match self.buffer.save() {
+            Ok(bytes) => {
+                let name = self.buffer.display_name();
+                self.set_message(format!("{} written — {} bytes", name, bytes));
+            }
+            Err(e) => {
+                self.set_message(format!("Save error: {:#}", e));
+            }
+        }
+    }
+
+    // ── Save-As prompt ────────────────────────────────────────────────────────
+
+    fn handle_prompt_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Enter => {
+                let filename = self.save_prompt.take().unwrap_or_default();
+                if filename.is_empty() {
+                    self.set_message("Save cancelled.".to_string());
+                } else {
+                    match self.buffer.save_to(PathBuf::from(filename)) {
+                        Ok(bytes) => {
+                            let name = self.buffer.display_name();
+                            self.set_message(format!("{} written — {} bytes", name, bytes));
+                        }
+                        Err(e) => {
+                            self.set_message(format!("Save error: {:#}", e));
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                self.save_prompt = None;
+                self.set_message("Save cancelled.".to_string());
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut s) = self.save_prompt {
+                    s.pop();
+                    let display = format!("Save as: {}", s);
+                    self.set_message(display);
+                }
+            }
+            KeyCode::Char(ch) => {
+                if let Some(ref mut s) = self.save_prompt {
+                    s.push(ch);
+                    let display = format!("Save as: {}", s);
+                    self.set_message(display);
+                }
+            }
+            _ => {}
         }
         Ok(())
     }

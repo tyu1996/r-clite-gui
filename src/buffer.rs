@@ -101,6 +101,110 @@ impl Buffer {
             None => "[No Name]".to_string(),
         }
     }
+
+    /// Convert a (row, col) cursor position to a rope char offset.
+    fn char_offset(&self, row: usize, col: usize) -> usize {
+        if self.rope.len_chars() == 0 {
+            return 0;
+        }
+        let line_start = self.rope.line_to_char(row.min(self.rope.len_lines().saturating_sub(1)));
+        line_start + col
+    }
+
+    /// Insert a single character at (row, col). Marks the buffer dirty.
+    pub fn insert_char(&mut self, row: usize, col: usize, ch: char) {
+        let offset = self.char_offset(row, col);
+        self.rope.insert_char(offset, ch);
+        self.dirty = true;
+    }
+
+    /// Insert a string at (row, col). Marks the buffer dirty.
+    pub fn insert_str(&mut self, row: usize, col: usize, s: &str) {
+        let offset = self.char_offset(row, col);
+        self.rope.insert(offset, s);
+        self.dirty = true;
+    }
+
+    /// Insert a newline at (row, col), splitting the line. Marks dirty.
+    pub fn insert_newline(&mut self, row: usize, col: usize) {
+        let offset = self.char_offset(row, col);
+        self.rope.insert_char(offset, '\n');
+        self.dirty = true;
+    }
+
+    /// Delete the character at (row, col).
+    ///
+    /// If col == line_len (cursor at end of line) and a next line exists,
+    /// joins the next line onto the current line by removing the newline.
+    /// Returns `true` if anything was deleted.
+    pub fn delete_char_at(&mut self, row: usize, col: usize) -> bool {
+        let line_len = self.line_len(row);
+        if col < line_len {
+            let offset = self.char_offset(row, col);
+            self.rope.remove(offset..offset + 1);
+            self.dirty = true;
+            true
+        } else if row + 1 < self.line_count() {
+            // Join next line: remove the newline at end of current line.
+            let offset = self.char_offset(row, col);
+            if offset < self.rope.len_chars() {
+                self.rope.remove(offset..offset + 1);
+                self.dirty = true;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Delete the character before (row, col) — Backspace behaviour.
+    ///
+    /// At the beginning of a line, joins the current line with the previous
+    /// line (removes the preceding newline).  At (0, 0) this is a no-op.
+    /// Returns the new (row, col) after the deletion.
+    pub fn delete_char_before(&mut self, row: usize, col: usize) -> (usize, usize) {
+        if col > 0 {
+            let offset = self.char_offset(row, col - 1);
+            self.rope.remove(offset..offset + 1);
+            self.dirty = true;
+            (row, col - 1)
+        } else if row > 0 {
+            // Remove the newline at the end of the previous line to join.
+            let prev_len = self.line_len(row - 1);
+            let offset = self.char_offset(row - 1, prev_len);
+            if offset < self.rope.len_chars() {
+                self.rope.remove(offset..offset + 1);
+                self.dirty = true;
+            }
+            (row - 1, prev_len)
+        } else {
+            (0, 0)
+        }
+    }
+
+    /// Save the buffer to its associated file path.
+    ///
+    /// Returns the number of bytes written. Clears the dirty flag on success.
+    pub fn save(&mut self) -> Result<usize> {
+        let path = self
+            .path
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No file path associated with this buffer"))?;
+        self.save_to(path)
+    }
+
+    /// Write the buffer content to `path`, update the associated path, and
+    /// clear the dirty flag.  Returns the number of bytes written.
+    pub fn save_to(&mut self, path: PathBuf) -> Result<usize> {
+        let content: String = self.rope.to_string();
+        let bytes = content.len();
+        fs::write(&path, &content)?;
+        self.path = Some(path);
+        self.dirty = false;
+        Ok(bytes)
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +284,174 @@ mod tests {
         let buf = Buffer::new_empty();
         assert_eq!(buf.line(99), "");
         assert_eq!(buf.line_len(99), 0);
+    }
+
+    // ── Mutation tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_char_marks_dirty() {
+        let mut buf = Buffer::new_empty();
+        assert!(!buf.is_dirty());
+        buf.insert_char(0, 0, 'a');
+        assert!(buf.is_dirty());
+    }
+
+    #[test]
+    fn insert_char_content() {
+        let mut buf = Buffer::new_empty();
+        buf.insert_char(0, 0, 'h');
+        buf.insert_char(0, 1, 'i');
+        assert_eq!(buf.line(0), "hi");
+        assert_eq!(buf.line_count(), 1);
+    }
+
+    #[test]
+    fn insert_char_mid_line() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("ac"),
+            path: None,
+            dirty: false,
+        };
+        buf.insert_char(0, 1, 'b');
+        assert_eq!(buf.line(0), "abc");
+    }
+
+    #[test]
+    fn insert_char_multibyte() {
+        let mut buf = Buffer::new_empty();
+        buf.insert_char(0, 0, '€');
+        buf.insert_char(0, 1, '£');
+        assert_eq!(buf.line(0), "€£");
+        assert_eq!(buf.line_len(0), 2);
+    }
+
+    #[test]
+    fn insert_newline_splits_line() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello world"),
+            path: None,
+            dirty: false,
+        };
+        buf.insert_newline(0, 5);
+        assert_eq!(buf.line_count(), 2);
+        assert_eq!(buf.line(0), "hello");
+        assert_eq!(buf.line(1), " world");
+    }
+
+    #[test]
+    fn delete_char_at_mid_line() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello"),
+            path: None,
+            dirty: false,
+        };
+        buf.delete_char_at(0, 2); // remove 'l'
+        assert_eq!(buf.line(0), "helo");
+        assert!(buf.is_dirty());
+    }
+
+    #[test]
+    fn delete_char_at_joins_lines() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello\nworld"),
+            path: None,
+            dirty: false,
+        };
+        // cursor at end of line 0 (col == line_len == 5)
+        buf.delete_char_at(0, 5);
+        assert_eq!(buf.line_count(), 1);
+        assert_eq!(buf.line(0), "helloworld");
+    }
+
+    #[test]
+    fn delete_char_at_end_of_last_line_is_noop() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello"),
+            path: None,
+            dirty: false,
+        };
+        let changed = buf.delete_char_at(0, 5);
+        assert!(!changed);
+        assert!(!buf.is_dirty());
+        assert_eq!(buf.line(0), "hello");
+    }
+
+    #[test]
+    fn delete_char_before_mid_line() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello"),
+            path: None,
+            dirty: false,
+        };
+        let (r, c) = buf.delete_char_before(0, 3); // backspace 'l'
+        assert_eq!((r, c), (0, 2));
+        assert_eq!(buf.line(0), "helo");
+    }
+
+    #[test]
+    fn delete_char_before_joins_lines() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello\nworld"),
+            path: None,
+            dirty: false,
+        };
+        let (r, c) = buf.delete_char_before(1, 0); // backspace at start of line 1
+        assert_eq!((r, c), (0, 5));
+        assert_eq!(buf.line_count(), 1);
+        assert_eq!(buf.line(0), "helloworld");
+    }
+
+    #[test]
+    fn delete_char_before_at_origin_is_noop() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello"),
+            path: None,
+            dirty: false,
+        };
+        let (r, c) = buf.delete_char_before(0, 0);
+        assert_eq!((r, c), (0, 0));
+        assert!(!buf.is_dirty());
+    }
+
+    #[test]
+    fn delete_char_multibyte() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("a€b"),
+            path: None,
+            dirty: false,
+        };
+        buf.delete_char_at(0, 1); // remove '€'
+        assert_eq!(buf.line(0), "ab");
+        assert_eq!(buf.line_len(0), 2);
+    }
+
+    #[test]
+    fn save_to_writes_file_and_clears_dirty() {
+        use std::io::Read;
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello\n"),
+            path: None,
+            dirty: true,
+        };
+        let tmp = std::env::temp_dir().join("rcte_test_save.txt");
+        let bytes = buf.save_to(tmp.clone()).unwrap();
+        assert_eq!(bytes, 6);
+        assert!(!buf.is_dirty());
+        let mut content = String::new();
+        std::fs::File::open(&tmp).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content, "hello\n");
+        std::fs::remove_file(tmp).unwrap();
+    }
+
+    #[test]
+    fn dirty_flag_transitions() {
+        let mut buf = Buffer::new_empty();
+        assert!(!buf.is_dirty());
+        buf.insert_char(0, 0, 'x');
+        assert!(buf.is_dirty());
+        let tmp = std::env::temp_dir().join("rcte_test_dirty.txt");
+        buf.save_to(tmp.clone()).unwrap();
+        assert!(!buf.is_dirty());
+        std::fs::remove_file(tmp).unwrap();
     }
 }
