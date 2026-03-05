@@ -14,8 +14,6 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-// ── Protocol messages ─────────────────────────────────────────────────────────
-
 /// Message sent from client to server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -50,8 +48,6 @@ pub enum PeerEvent {
     Joined,
     Left,
 }
-
-// ── Handle types ──────────────────────────────────────────────────────────────
 
 /// An event received from the collaboration layer, to be applied to the local buffer.
 #[derive(Debug, Clone)]
@@ -167,8 +163,6 @@ impl CollabHandle {
     }
 }
 
-// ── OT transform ──────────────────────────────────────────────────────────────
-
 /// Transform a client operation's position against a server operation that
 /// happened concurrently.  Returns the new position for the client op.
 ///
@@ -230,13 +224,9 @@ pub fn transform_pos(
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── OT transform tests ────────────────────────────────────────────────────
 
     #[test]
     fn insert_vs_insert_client_after_server() {
@@ -346,8 +336,6 @@ mod tests {
         assert_eq!(new_pos, 2);
     }
 }
-
-// ── Network I/O helpers ───────────────────────────────────────────────────────
 
 /// Write a length-prefixed JSON message to a tokio `AsyncWrite`.
 pub async fn write_msg<W, T>(writer: &mut W, msg: &T) -> std::io::Result<()>

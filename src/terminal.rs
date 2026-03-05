@@ -31,8 +31,6 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        // Ignore errors — we are either panicking or shutting down; there is
-        // nothing useful we can do if these fail.
         let _ = terminal::disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         let _ = io::stdout().flush();

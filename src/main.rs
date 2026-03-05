@@ -50,7 +50,6 @@ fn run() -> Result<()> {
 
     #[cfg(feature = "collab")]
     {
-        // ── Host mode ────────────────────────────────────────────────────────
         if let Some(host_file) = cli.host {
             let buf = buffer::Buffer::open(host_file)?;
             let content: String = buf.rope.to_string();
@@ -68,7 +67,6 @@ fn run() -> Result<()> {
             return ed.run();
         }
 
-        // ── Guest mode ───────────────────────────────────────────────────────
         if let Some(join_str) = cli.join {
             let addr = parse_addr(&join_str)?;
             let username = whoami();
@@ -88,7 +86,6 @@ fn run() -> Result<()> {
         }
     }
 
-    // ── Normal (non-collab) mode ──────────────────────────────────────────────
     let buf = match cli.file {
         Some(path) => buffer::Buffer::open(path)?,
         None => buffer::Buffer::new_empty(),

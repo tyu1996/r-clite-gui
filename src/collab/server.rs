@@ -17,8 +17,6 @@ use super::{
     PeerEvent, ServerMsg, read_msg, write_msg,
 };
 
-// ── Server state ──────────────────────────────────────────────────────────────
-
 struct LoggedOp {
     rev: u64,
     kind: OpKind,
@@ -128,8 +126,6 @@ impl ServerState {
     }
 }
 
-// ── Host op handler ───────────────────────────────────────────────────────────
-
 /// Task that reads local (host) ops from the editor and applies them to the
 /// canonical state, then broadcasts to all guest peers.
 async fn host_op_task(
@@ -172,8 +168,6 @@ async fn host_op_task(
         }
     }
 }
-
-// ── Guest connection handler ──────────────────────────────────────────────────
 
 async fn handle_guest(
     stream: tokio::net::TcpStream,
@@ -316,8 +310,6 @@ async fn handle_guest(
     }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
 /// Start the collaboration server, bind a random TCP port, and return the
 /// bound port together with a `CollabHandle` for the host editor.
 ///
@@ -401,8 +393,6 @@ pub fn start_server(initial_content: String, username: String) -> Result<(u16, C
     Ok((port, handle))
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,8 +419,6 @@ mod tests {
         }
         content
     }
-
-    // ── Direct ServerState convergence tests ──────────────────────────────────
 
     #[test]
     fn server_state_two_concurrent_inserts_different_positions() {
@@ -489,8 +477,6 @@ mod tests {
         assert!(content.contains("ello"), "expected ello in {:?}", content);
         assert!(content.contains('!'), "expected ! in {:?}", content);
     }
-
-    // ── Network plumbing tests ────────────────────────────────────────────────
 
     #[test]
     fn network_client_receives_initial_sync() {

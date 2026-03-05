@@ -67,7 +67,7 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
     let mut plain: String = String::new();
 
     while i < len {
-        // ── Inside a block comment ─────────────────────────────────────────
+        // inside a block comment
         if in_block {
             push_plain(&mut spans, &mut plain);
             let start = i;
@@ -83,14 +83,14 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             continue;
         }
 
-        // ── Line comment `//` ──────────────────────────────────────────────
+        // line comment
         if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
             push_plain(&mut spans, &mut plain);
             spans.push(Span::colored(chars[i..].iter().collect::<String>(), Color::DarkGrey));
             return (spans, false);
         }
 
-        // ── Block comment start `/*` ───────────────────────────────────────
+        // block comment start
         if i + 1 < len && chars[i] == '/' && chars[i + 1] == '*' {
             push_plain(&mut spans, &mut plain);
             in_block = true;
@@ -108,7 +108,7 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             continue;
         }
 
-        // ── String literal `"…"` ──────────────────────────────────────────
+        // string literal
         if chars[i] == '"' {
             push_plain(&mut spans, &mut plain);
             let start = i;
@@ -122,7 +122,7 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             continue;
         }
 
-        // ── Char literal `'x'` ────────────────────────────────────────────
+        // char literal
         if chars[i] == '\'' {
             // Distinguish lifetime annotations (`'a `) from char literals (`'a'`).
             let is_lifetime = i + 1 < len && chars[i + 1].is_alphabetic()
@@ -141,7 +141,7 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             }
         }
 
-        // ── Number literal ────────────────────────────────────────────────
+        // number literal
         if chars[i].is_ascii_digit() {
             push_plain(&mut spans, &mut plain);
             let start = i;
@@ -152,7 +152,7 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             continue;
         }
 
-        // ── Identifier: keyword or capitalised type ───────────────────────
+        // identifier: keyword or capitalised type
         if chars[i].is_alphabetic() || chars[i] == '_' {
             let start = i;
             while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
@@ -170,7 +170,7 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             continue;
         }
 
-        // ── Plain character ────────────────────────────────────────────────
+        // plain character
         plain.push(chars[i]);
         i += 1;
     }

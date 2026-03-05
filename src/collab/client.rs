@@ -16,8 +16,6 @@ use super::{
     read_msg, write_msg,
 };
 
-// ── Connection task ───────────────────────────────────────────────────────────
-
 /// Task that manages the TCP connection, sending local ops and receiving
 /// remote ops.  Automatically retries on disconnect (up to 10 times).
 async fn connection_task(
@@ -193,8 +191,6 @@ async fn run_session(
         }
     }
 }
-
-// ── Public API ────────────────────────────────────────────────────────────────
 
 /// Connect to a collaboration host and return a `CollabHandle` for the guest
 /// editor.  Blocks until the initial sync is received.

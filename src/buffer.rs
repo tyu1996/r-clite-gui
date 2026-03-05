@@ -53,8 +53,6 @@ impl Buffer {
                 dirty: false,
             })
         } else {
-            // New file: buffer is empty and not dirty yet — the file does not
-            // exist until the user saves for the first time.
             Ok(Self {
                 rope: Rope::new(),
                 path: Some(path),
@@ -134,16 +132,12 @@ impl Buffer {
     }
 
     /// Insert `text` at the given rope char offset. Marks dirty.
-    ///
-    /// Used by the undo/redo system to replay or reverse operations by offset.
     pub fn raw_insert(&mut self, pos: usize, text: &str) {
         self.rope.insert(pos, text);
         self.dirty = true;
     }
 
     /// Delete `len` chars starting at the given rope char offset. Marks dirty.
-    ///
-    /// Used by the undo/redo system to replay or reverse operations by offset.
     pub fn raw_delete(&mut self, pos: usize, len: usize) {
         if len > 0 && pos + len <= self.rope.len_chars() {
             self.rope.remove(pos..pos + len);
@@ -301,9 +295,7 @@ impl Buffer {
         }
     }
 
-    /// Save the buffer to its associated file path.
-    ///
-    /// Returns the number of bytes written. Clears the dirty flag on success.
+    /// Save to the associated file path. Returns bytes written.
     pub fn save(&mut self) -> Result<usize> {
         let path = self
             .path
@@ -312,8 +304,6 @@ impl Buffer {
         self.save_to(path)
     }
 
-    /// Write the buffer content to `path`, update the associated path, and
-    /// clear the dirty flag.  Returns the number of bytes written.
     pub fn save_to(&mut self, path: PathBuf) -> Result<usize> {
         let content: String = self.rope.to_string();
         let bytes = content.len();
@@ -402,8 +392,6 @@ mod tests {
         assert_eq!(buf.line(99), "");
         assert_eq!(buf.line_len(99), 0);
     }
-
-    // ── Mutation tests ────────────────────────────────────────────────────────
 
     #[test]
     fn insert_char_marks_dirty() {

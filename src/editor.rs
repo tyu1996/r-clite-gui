@@ -18,7 +18,7 @@ use crate::ui::{RenderState, Ui};
 #[cfg(feature = "collab")]
 use crate::collab::{CollabEvent, CollabHandle, CollabRole, OpKind};
 
-// ── Undo / Redo ───────────────────────────────────────────────────────────────
+// Undo / Redo
 
 /// A single reversible edit stored as rope char-offset operations.
 #[derive(Debug, Clone)]
@@ -40,8 +40,6 @@ struct UndoEntry {
     cursor_after: (usize, usize),
 }
 
-// ── Search state ──────────────────────────────────────────────────────────────
-
 struct SearchState {
     query: String,
     /// Char offset of the current highlighted match, if any.
@@ -52,8 +50,6 @@ struct SearchState {
     saved_col_offset: usize,
 }
 
-// ── Editor ────────────────────────────────────────────────────────────────────
-
 /// The core editor.
 pub struct Editor {
     buffer: Buffer,
@@ -61,44 +57,35 @@ pub struct Editor {
     ui: Ui,
     config: Config,
 
-    // ── Cursor ────────────────────────────────────────────────────────────────
     cursor_row: usize,
     cursor_col: usize,
     /// The column the user is "trying" to be at (preserved across vertical moves).
     desired_col: usize,
 
-    // ── Viewport ──────────────────────────────────────────────────────────────
     /// Index of the first visible line (vertical scroll).
     scroll_offset: usize,
     /// Index of the first visible column (horizontal scroll).
     col_offset: usize,
 
-    // ── Quit guard ────────────────────────────────────────────────────────────
     quit_count: u8,
     last_quit_at: Option<Instant>,
 
-    // ── Message bar ───────────────────────────────────────────────────────────
     message: Option<(String, Instant)>,
 
-    // ── Save-As prompt ────────────────────────────────────────────────────────
     save_prompt: Option<String>,
 
-    // ── Undo / Redo ───────────────────────────────────────────────────────────
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     /// Time of the last single-char insert (for grouping).
     last_insert_at: Option<Instant>,
 
-    // ── Search ────────────────────────────────────────────────────────────────
     search: Option<SearchState>,
 
-    // ── Save point (for undo-to-clean-state dirty-flag clearing) ─────────────
     /// Undo stack depth at the time of the last successful save.
     save_depth: Option<usize>,
 
     should_quit: bool,
 
-    // ── Collaboration ─────────────────────────────────────────────────────────
     #[cfg(feature = "collab")]
     collab: Option<CollabHandle>,
     /// Last cursor char-offset sent to peers (avoids redundant cursor msgs).
@@ -308,8 +295,6 @@ impl Editor {
         }
     }
 
-    // ── Message helpers ────────────────────────────────────────────────────────
-
     fn set_message(&mut self, msg: String) {
         self.message = Some((msg, Instant::now()));
     }
@@ -322,8 +307,6 @@ impl Editor {
             _ => None,
         }
     }
-
-    // ── Input dispatch ─────────────────────────────────────────────────────────
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         if self.save_prompt.is_some() {
@@ -361,8 +344,6 @@ impl Editor {
         Ok(())
     }
 
-    // ── Editing ───────────────────────────────────────────────────────────────
-
     /// Send a local insert op to the collab layer (no-op if not in collab mode).
     #[cfg(feature = "collab")]
     fn collab_send_insert(&self, pos: usize, text: String) {
@@ -385,8 +366,6 @@ impl Editor {
         self.cursor_col += 1;
         self.desired_col = self.cursor_col;
 
-        // Undo grouping: merge with last entry if it's an adjacent insert and
-        // was made within 1 second.
         let within_window = self
             .last_insert_at
             .map(|t| t.elapsed() < Duration::from_secs(1))
@@ -538,8 +517,6 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
-    // ── Undo / Redo ───────────────────────────────────────────────────────────
-
     fn push_undo(&mut self, ops: Vec<EditOp>, cursor_before: (usize, usize), cursor_after: (usize, usize)) {
         self.undo_stack.push(UndoEntry { ops, cursor_before, cursor_after });
     }
@@ -553,7 +530,6 @@ impl Editor {
             }
         };
 
-        // Apply reverse ops in reverse order.
         for op in entry.ops.iter().rev() {
             match op {
                 EditOp::Insert { pos, text } => {
@@ -571,7 +547,6 @@ impl Editor {
         self.cursor_col = col.min(self.buffer.line_len(self.cursor_row));
         self.desired_col = self.cursor_col;
 
-        // Build a redo entry (reverse of the undo entry).
         let redo_ops: Vec<EditOp> = entry.ops.iter().map(|op| match op {
             EditOp::Insert { pos, text } => EditOp::Delete { pos: *pos, text: text.clone() },
             EditOp::Delete { pos, text } => EditOp::Insert { pos: *pos, text: text.clone() },
@@ -615,7 +590,6 @@ impl Editor {
         self.cursor_col = col.min(self.buffer.line_len(self.cursor_row));
         self.desired_col = self.cursor_col;
 
-        // Push back to undo stack.
         let undo_ops: Vec<EditOp> = entry.ops.iter().map(|op| match op {
             EditOp::Insert { pos, text } => EditOp::Delete { pos: *pos, text: text.clone() },
             EditOp::Delete { pos, text } => EditOp::Insert { pos: *pos, text: text.clone() },
@@ -632,8 +606,6 @@ impl Editor {
         }
         self.scroll_to_cursor();
     }
-
-    // ── Save ──────────────────────────────────────────────────────────────────
 
     fn handle_save(&mut self) -> Result<()> {
         #[cfg(feature = "collab")]
@@ -662,15 +634,13 @@ impl Editor {
                 let name = self.buffer.display_name();
                 self.set_message(format!("{} written — {} bytes", name, bytes));
                 self.save_depth = Some(self.undo_stack.len());
-                self.last_insert_at = None; // break current undo group at save boundary
+                self.last_insert_at = None;
             }
             Err(e) => {
                 self.set_message(format!("Save error: {:#}", e));
             }
         }
     }
-
-    // ── Save-As prompt ────────────────────────────────────────────────────────
 
     fn handle_prompt_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match key.code {
@@ -714,8 +684,6 @@ impl Editor {
         }
         Ok(())
     }
-
-    // ── Search ────────────────────────────────────────────────────────────────
 
     fn start_search(&mut self) {
         self.search = Some(SearchState {
@@ -826,8 +794,6 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
-    // ── Cursor movement ────────────────────────────────────────────────────────
-
     fn move_up(&mut self) {
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
@@ -902,8 +868,6 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
-    // ── Clamping & scrolling ──────────────────────────────────────────────────
-
     fn clamp_col_to_line(&mut self) {
         let line_len = self.buffer.line_len(self.cursor_row);
         self.cursor_col = self.desired_col.min(line_len);
@@ -927,8 +891,6 @@ impl Editor {
             self.col_offset = self.cursor_col - text_width + 1;
         }
     }
-
-    // ── Quit ──────────────────────────────────────────────────────────────────
 
     fn handle_quit(&mut self) -> Result<()> {
         #[cfg(feature = "collab")]
