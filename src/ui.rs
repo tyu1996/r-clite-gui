@@ -111,7 +111,7 @@ impl Ui {
         stdout.queue(Clear(ClearType::CurrentLine))?;
 
         let filename = buffer.display_name();
-        let dirty_flag = if buffer.is_dirty() { " [modified]" } else { "" };
+        let dirty_flag = if buffer.is_dirty() { " | [modified]" } else { "" };
         let status = format!(
             "{} | Ln {}, Col {}{}",
             filename,
