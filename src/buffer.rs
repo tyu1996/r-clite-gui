@@ -88,6 +88,14 @@ impl Buffer {
         self.dirty
     }
 
+    /// Clear the dirty flag without writing to disk.
+    ///
+    /// Used by the undo system to mark the buffer as clean when the content
+    /// has been restored to the last-saved state.
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
     /// A human-readable name for the buffer.
     ///
     /// Shows the file name component of the path, or `[No Name]` for unnamed
@@ -100,6 +108,106 @@ impl Buffer {
                 .unwrap_or_else(|| p.to_string_lossy().into_owned()),
             None => "[No Name]".to_string(),
         }
+    }
+
+    /// Convert a (row, col) cursor position to a rope char offset.
+    pub fn char_offset_for(&self, row: usize, col: usize) -> usize {
+        self.char_offset(row, col)
+    }
+
+    /// Return the char at the given rope char offset, or `None` if out of bounds.
+    pub fn char_at_offset(&self, pos: usize) -> Option<char> {
+        if pos < self.rope.len_chars() {
+            Some(self.rope.char(pos))
+        } else {
+            None
+        }
+    }
+
+    /// Insert `text` at the given rope char offset. Marks dirty.
+    ///
+    /// Used by the undo/redo system to replay or reverse operations by offset.
+    pub fn raw_insert(&mut self, pos: usize, text: &str) {
+        self.rope.insert(pos, text);
+        self.dirty = true;
+    }
+
+    /// Delete `len` chars starting at the given rope char offset. Marks dirty.
+    ///
+    /// Used by the undo/redo system to replay or reverse operations by offset.
+    pub fn raw_delete(&mut self, pos: usize, len: usize) {
+        if len > 0 && pos + len <= self.rope.len_chars() {
+            self.rope.remove(pos..pos + len);
+            self.dirty = true;
+        }
+    }
+
+    /// Convert a rope char offset back to `(row, col)`.
+    pub fn offset_to_row_col(&self, pos: usize) -> (usize, usize) {
+        let pos = pos.min(self.rope.len_chars());
+        let row = self.rope.char_to_line(pos);
+        let line_start = self.rope.line_to_char(row);
+        (row, pos - line_start)
+    }
+
+    /// Search for `query` (case-insensitive) starting at char offset `from`.
+    ///
+    /// Returns the char offset of the start of the next match, wrapping around
+    /// the end of the document.  Returns `None` if there are no matches.
+    pub fn find_next(&self, query: &str, from: usize) -> Option<usize> {
+        if query.is_empty() {
+            return None;
+        }
+        let text: String = self.rope.chars().collect();
+        let low_text = text.to_lowercase();
+        let low_query = query.to_lowercase();
+        let query_len = low_query.chars().count();
+        let doc_len = low_text.chars().count();
+        if query_len > doc_len {
+            return None;
+        }
+        // Build a char-indexed view to search efficiently.
+        let chars: Vec<char> = low_text.chars().collect();
+        let qchars: Vec<char> = low_query.chars().collect();
+        // Search forward from `from` (wrapping).
+        for offset in 0..doc_len {
+            let pos = (from + offset) % doc_len;
+            if pos + query_len > doc_len {
+                continue;
+            }
+            if chars[pos..pos + query_len] == qchars[..] {
+                return Some(pos);
+            }
+        }
+        None
+    }
+
+    /// Search backward for `query` starting just before char offset `from`.
+    pub fn find_prev(&self, query: &str, from: usize) -> Option<usize> {
+        if query.is_empty() {
+            return None;
+        }
+        let text: String = self.rope.chars().collect();
+        let low_text = text.to_lowercase();
+        let low_query = query.to_lowercase();
+        let query_len = low_query.chars().count();
+        let doc_len = low_text.chars().count();
+        if query_len > doc_len {
+            return None;
+        }
+        let chars: Vec<char> = low_text.chars().collect();
+        let qchars: Vec<char> = low_query.chars().collect();
+        // Search backward from `from - 1` (wrapping).
+        for offset in 1..=doc_len {
+            let pos = (from + doc_len - offset) % doc_len;
+            if pos + query_len > doc_len {
+                continue;
+            }
+            if chars[pos..pos + query_len] == qchars[..] {
+                return Some(pos);
+            }
+        }
+        None
     }
 
     /// Convert a (row, col) cursor position to a rope char offset.

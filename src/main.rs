@@ -3,7 +3,9 @@
 /// This is the entry point. It handles only CLI argument parsing and
 /// delegates all work to the editor module.
 mod buffer;
+mod config;
 mod editor;
+mod highlight;
 mod keymap;
 mod terminal;
 mod ui;
@@ -34,11 +36,18 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
+    let (cfg, cfg_warning) = config::Config::load();
+
     let buf = match cli.file {
         Some(path) => buffer::Buffer::open(path)?,
         None => buffer::Buffer::new_empty(),
     };
 
-    let mut ed = editor::Editor::new(buf)?;
+    let mut ed = editor::Editor::new(buf, cfg)?;
+
+    if let Some(warn) = cfg_warning {
+        ed.set_startup_message(warn);
+    }
+
     ed.run()
 }

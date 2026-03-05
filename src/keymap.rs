@@ -44,6 +44,14 @@ pub enum Command {
     Save,
     /// Save the buffer to a new path (Save As).
     SaveAs,
+    /// Undo the last edit operation.
+    Undo,
+    /// Redo the last undone operation.
+    Redo,
+    /// Open the find/search prompt.
+    Find,
+    /// Toggle line number display.
+    ToggleLineNumbers,
     /// No-op — the key has no binding in the current context.
     None,
 }
@@ -87,6 +95,16 @@ pub fn map(event: KeyEvent) -> Command {
         }
         KeyCode::Char('S') if ctrl => Command::SaveAs,
         KeyCode::Char('s') if ctrl => Command::Save,
+
+        // Undo / Redo
+        KeyCode::Char('z') if ctrl => Command::Undo,
+        KeyCode::Char('y') if ctrl => Command::Redo,
+
+        // Find
+        KeyCode::Char('f') if ctrl => Command::Find,
+
+        // Toggle line numbers
+        KeyCode::Char('l') if ctrl => Command::ToggleLineNumbers,
 
         // Editing
         KeyCode::Enter => Command::InsertNewline,
