@@ -15,6 +15,9 @@ use crate::keymap::{self, Command};
 use crate::terminal::RawModeGuard;
 use crate::ui::{RenderState, Ui};
 
+#[cfg(feature = "collab")]
+use crate::collab::{CollabEvent, CollabHandle, CollabRole, OpKind};
+
 // ── Undo / Redo ───────────────────────────────────────────────────────────────
 
 /// A single reversible edit stored as rope char-offset operations.
@@ -94,11 +97,31 @@ pub struct Editor {
     save_depth: Option<usize>,
 
     should_quit: bool,
+
+    // ── Collaboration ─────────────────────────────────────────────────────────
+    #[cfg(feature = "collab")]
+    collab: Option<CollabHandle>,
+    /// Last cursor char-offset sent to peers (avoids redundant cursor msgs).
+    #[cfg(feature = "collab")]
+    last_sent_cursor: Option<usize>,
 }
 
 impl Editor {
     /// Construct a new editor for the given buffer and enter raw mode.
+    #[cfg(not(feature = "collab"))]
     pub fn new(buffer: Buffer, config: Config) -> Result<Self> {
+        Self::new_inner(buffer, config)
+    }
+
+    /// Construct a new editor for the given buffer and enter raw mode.
+    #[cfg(feature = "collab")]
+    pub fn new(buffer: Buffer, config: Config, collab: Option<CollabHandle>) -> Result<Self> {
+        let mut ed = Self::new_inner(buffer, config)?;
+        ed.collab = collab;
+        Ok(ed)
+    }
+
+    fn new_inner(buffer: Buffer, config: Config) -> Result<Self> {
         let guard = RawModeGuard::new()?;
         let (w, h) = crate::terminal::size()?;
         let mut ui = Ui::new(w as usize, h as usize);
@@ -125,6 +148,10 @@ impl Editor {
             search: None,
             save_depth: None,
             should_quit: false,
+            #[cfg(feature = "collab")]
+            collab: None,
+            #[cfg(feature = "collab")]
+            last_sent_cursor: None,
         })
     }
 
@@ -143,6 +170,22 @@ impl Editor {
                 self.ui.height = h as usize;
             }
 
+            // Apply any pending remote collaboration events.
+            #[cfg(feature = "collab")]
+            self.apply_collab_events();
+
+            // Send cursor position to peers when it changes.
+            #[cfg(feature = "collab")]
+            {
+                let offset = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+                if Some(offset) != self.last_sent_cursor {
+                    if let Some(h) = &self.collab {
+                        h.send_cursor(offset);
+                    }
+                    self.last_sent_cursor = Some(offset);
+                }
+            }
+
             let file_ext = self
                 .buffer
                 .path
@@ -155,6 +198,11 @@ impl Editor {
                 s.current_match.map(|offset| (offset, s.query.chars().count()))
             });
 
+            #[cfg(feature = "collab")]
+            let collab_status = self.collab.as_ref().map(|h| h.status_str());
+            #[cfg(feature = "collab")]
+            let peer_cursors = self.collab.as_ref().map(|h| h.peer_cursors()).unwrap_or_default();
+
             self.ui.render(
                 &self.buffer,
                 &RenderState {
@@ -165,6 +213,10 @@ impl Editor {
                     message: self.current_message(),
                     search_match,
                     file_ext: file_ext.as_deref(),
+                    #[cfg(feature = "collab")]
+                    collab_status: collab_status.as_deref(),
+                    #[cfg(feature = "collab")]
+                    peer_cursors: &peer_cursors,
                 },
             )?;
 
@@ -172,12 +224,88 @@ impl Editor {
                 break;
             }
 
-            if let Event::Key(key) = event::read()? {
-                self.handle_key(key)?;
+            // Use poll with a short timeout so we can process collab events
+            // even when no keys are pressed.
+            if event::poll(Duration::from_millis(50))? {
+                if let Event::Key(key) = event::read()? {
+                    self.handle_key(key)?;
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Drain and apply all pending collaboration events.
+    #[cfg(feature = "collab")]
+    fn apply_collab_events(&mut self) {
+        loop {
+            let ev = match self.collab.as_mut() {
+                Some(h) => h.try_recv(),
+                None => break,
+            };
+            match ev {
+                Some(CollabEvent::Edit { kind, pos, text, peer: _, rev: _ }) => {
+                    // Apply the remote edit to the local buffer (no undo entry).
+                    match kind {
+                        OpKind::Insert => {
+                            self.buffer.raw_insert(pos, &text);
+                            // Shift cursor if it's at or past the insertion point.
+                            let cursor_offset = self
+                                .buffer
+                                .char_offset_for(self.cursor_row, self.cursor_col);
+                            if cursor_offset >= pos {
+                                let len = text.chars().count();
+                                let new_offset = cursor_offset + len;
+                                let (r, c) = self.buffer.offset_to_row_col(new_offset);
+                                self.cursor_row = r;
+                                self.cursor_col = c;
+                                self.desired_col = c;
+                            }
+                        }
+                        OpKind::Delete => {
+                            let len = text.chars().count();
+                            let cursor_offset = self
+                                .buffer
+                                .char_offset_for(self.cursor_row, self.cursor_col);
+                            self.buffer.raw_delete(pos, len);
+                            // Adjust cursor if affected.
+                            if cursor_offset > pos {
+                                let new_offset = if cursor_offset >= pos + len {
+                                    cursor_offset - len
+                                } else {
+                                    pos
+                                };
+                                let (r, c) = self.buffer.offset_to_row_col(new_offset);
+                                self.cursor_row = r;
+                                self.cursor_col = c;
+                                self.desired_col = c;
+                            }
+                        }
+                    }
+                    // Clear dirty flag on host (guests don't save).
+                    self.scroll_to_cursor();
+                }
+                Some(CollabEvent::FullSync { content, rev: _ }) => {
+                    // Replace entire buffer content.
+                    self.buffer = crate::buffer::Buffer::from_content(content);
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                    self.desired_col = 0;
+                    self.scroll_offset = 0;
+                    self.col_offset = 0;
+                    self.undo_stack.clear();
+                    self.redo_stack.clear();
+                }
+                Some(CollabEvent::LocalConfirm { .. })
+                | Some(CollabEvent::PeersChanged { .. })
+                | Some(CollabEvent::PeerCursor { .. })
+                | Some(CollabEvent::ConnectionStatus { .. }) => {
+                    // State is updated in the shared CollabState; just re-render.
+                }
+                None => break,
+            }
+        }
     }
 
     // ── Message helpers ────────────────────────────────────────────────────────
@@ -235,6 +363,22 @@ impl Editor {
 
     // ── Editing ───────────────────────────────────────────────────────────────
 
+    /// Send a local insert op to the collab layer (no-op if not in collab mode).
+    #[cfg(feature = "collab")]
+    fn collab_send_insert(&self, pos: usize, text: String) {
+        if let Some(h) = &self.collab {
+            h.send_insert(pos, text);
+        }
+    }
+
+    /// Send a local delete op to the collab layer (no-op if not in collab mode).
+    #[cfg(feature = "collab")]
+    fn collab_send_delete(&self, pos: usize, text: String) {
+        if let Some(h) = &self.collab {
+            h.send_delete(pos, text);
+        }
+    }
+
     fn handle_insert_char(&mut self, ch: char) {
         let pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
         self.buffer.insert_char(self.cursor_row, self.cursor_col, ch);
@@ -280,6 +424,8 @@ impl Editor {
             self.save_depth = None;
         }
         self.redo_stack.clear();
+        #[cfg(feature = "collab")]
+        self.collab_send_insert(pos, ch.to_string());
         self.scroll_to_cursor();
     }
 
@@ -311,6 +457,8 @@ impl Editor {
             self.save_depth = None;
         }
         self.redo_stack.clear();
+        #[cfg(feature = "collab")]
+        self.collab_send_delete(del_pos, ch.to_string());
         self.scroll_to_cursor();
     }
 
@@ -338,6 +486,8 @@ impl Editor {
             self.save_depth = None;
         }
         self.redo_stack.clear();
+        #[cfg(feature = "collab")]
+        self.collab_send_delete(pos, ch.to_string());
         self.scroll_to_cursor();
     }
 
@@ -359,6 +509,8 @@ impl Editor {
             self.save_depth = None;
         }
         self.redo_stack.clear();
+        #[cfg(feature = "collab")]
+        self.collab_send_insert(pos, "\n".to_string());
         self.scroll_to_cursor();
     }
 
@@ -372,7 +524,7 @@ impl Editor {
         self.desired_col = self.cursor_col;
 
         self.push_undo(
-            vec![EditOp::Insert { pos, text: spaces }],
+            vec![EditOp::Insert { pos, text: spaces.clone() }],
             cursor_before,
             (self.cursor_row, self.cursor_col),
         );
@@ -381,6 +533,8 @@ impl Editor {
             self.save_depth = None;
         }
         self.redo_stack.clear();
+        #[cfg(feature = "collab")]
+        self.collab_send_insert(pos, spaces);
         self.scroll_to_cursor();
     }
 
@@ -482,6 +636,13 @@ impl Editor {
     // ── Save ──────────────────────────────────────────────────────────────────
 
     fn handle_save(&mut self) -> Result<()> {
+        #[cfg(feature = "collab")]
+        if let Some(h) = &self.collab {
+            if matches!(h.role, CollabRole::Guest { .. }) {
+                self.set_message("Only the host can save.".to_string());
+                return Ok(());
+            }
+        }
         if self.buffer.path.is_none() {
             self.start_save_prompt();
         } else {
@@ -770,6 +931,34 @@ impl Editor {
     // ── Quit ──────────────────────────────────────────────────────────────────
 
     fn handle_quit(&mut self) -> Result<()> {
+        #[cfg(feature = "collab")]
+        {
+            if let Some(h) = &self.collab {
+                // Guests disconnect and exit immediately — no unsaved-changes guard.
+                if matches!(h.role, CollabRole::Guest { .. }) {
+                    self.should_quit = true;
+                    return Ok(());
+                }
+                if matches!(h.role, CollabRole::Host { .. }) && h.peer_count() > 0 {
+                    let now = Instant::now();
+                    let within_window = self
+                        .last_quit_at
+                        .map(|t| now.duration_since(t) < Duration::from_secs(3))
+                        .unwrap_or(false);
+                    if within_window && self.quit_count >= 1 {
+                        self.should_quit = true;
+                        return Ok(());
+                    }
+                    self.quit_count = 1;
+                    self.last_quit_at = Some(now);
+                    self.set_message(
+                        "Disconnect all peers and quit? Press Ctrl+Q again to confirm.".to_string(),
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         if self.buffer.is_dirty() {
             let now = Instant::now();
             let within_window = self

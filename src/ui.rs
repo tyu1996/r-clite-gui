@@ -26,7 +26,24 @@ pub struct RenderState<'a> {
     /// (char_offset, match_len) of the current search match, if any.
     pub search_match: Option<(usize, usize)>,
     pub file_ext: Option<&'a str>,
+    /// Collab status string for the status bar (e.g. "[Host:1234]").
+    #[cfg(feature = "collab")]
+    pub collab_status: Option<&'a str>,
+    /// Remote peer cursor positions: peer_name → char_offset.
+    #[cfg(feature = "collab")]
+    pub peer_cursors: &'a std::collections::HashMap<String, usize>,
 }
+
+/// Colors assigned to remote peers (cycled in order of first appearance).
+#[cfg(feature = "collab")]
+const PEER_COLORS: [Color; 6] = [
+    Color::Green,
+    Color::Yellow,
+    Color::Cyan,
+    Color::Magenta,
+    Color::Red,
+    Color::Blue,
+];
 
 /// Manages rendering the editor UI to the terminal.
 pub struct Ui {
@@ -74,6 +91,11 @@ impl Ui {
     /// - The message bar is drawn on the last row.
     /// - The terminal cursor is repositioned to the editor cursor after drawing.
     pub fn render(&self, buffer: &Buffer, state: &RenderState<'_>) -> Result<()> {
+        #[cfg(feature = "collab")]
+        let collab_status = state.collab_status;
+        #[cfg(feature = "collab")]
+        let peer_cursors = state.peer_cursors;
+
         let RenderState {
             cursor_row,
             cursor_col,
@@ -82,6 +104,7 @@ impl Ui {
             message,
             search_match,
             file_ext,
+            ..
         } = *state;
         let mut stdout = io::stdout();
 
@@ -122,6 +145,21 @@ impl Ui {
                 let mut char_pos = 0usize; // position within the line (0-indexed)
                 let mut printed = 0usize;
 
+                // Build a map of (col_in_line → peer_color) for remote cursors on this line.
+                #[cfg(feature = "collab")]
+                let peer_cursor_cols: std::collections::HashMap<usize, Color> = {
+                    let mut map = std::collections::HashMap::new();
+                    let line_char_end = line_char_start + buffer.line_len(file_row);
+                    for (idx, (_peer, &offset)) in peer_cursors.iter().enumerate() {
+                        if offset >= line_char_start && offset <= line_char_end {
+                            let col = offset - line_char_start;
+                            let color = PEER_COLORS[idx % PEER_COLORS.len()];
+                            map.insert(col, color);
+                        }
+                    }
+                    map
+                };
+
                 for span in &spans {
                     for ch in span.text.chars() {
                         if char_pos < col_offset {
@@ -136,6 +174,20 @@ impl Ui {
                         let is_match = search_match
                             .map(|(m_start, m_len)| abs_offset >= m_start && abs_offset < m_start + m_len)
                             .unwrap_or(false);
+
+                        #[cfg(feature = "collab")]
+                        let peer_color = peer_cursor_cols.get(&char_pos).copied();
+
+                        #[cfg(feature = "collab")]
+                        if let Some(color) = peer_color {
+                            stdout.queue(SetForegroundColor(Color::Black))?;
+                            stdout.queue(crossterm::style::SetBackgroundColor(color))?;
+                            write!(stdout, "{}", ch)?;
+                            stdout.queue(ResetColor)?;
+                            char_pos += 1;
+                            printed += 1;
+                            continue;
+                        }
 
                         if is_match {
                             stdout.queue(SetAttribute(Attribute::Reverse))?;
@@ -172,7 +224,47 @@ impl Ui {
             write!(stdout, "\r\n")?;
         }
 
-        self.render_status_bar(&mut stdout, buffer, cursor_row, cursor_col)?;
+        // Second pass: render peer username labels next to their cursor blocks.
+        #[cfg(feature = "collab")]
+        for (idx, (peer_name, &offset)) in peer_cursors.iter().enumerate() {
+            let (peer_row, peer_col) = buffer.offset_to_row_col(offset);
+            if peer_row < scroll_offset {
+                continue;
+            }
+            let peer_screen_row = peer_row - scroll_offset;
+            if peer_screen_row >= rows {
+                continue;
+            }
+            if peer_col < col_offset {
+                continue;
+            }
+            let col_in_viewport = peer_col - col_offset;
+            // Label starts right after the cursor block character.
+            let label_screen_col = gutter + col_in_viewport + 1;
+            if label_screen_col >= self.width {
+                continue;
+            }
+            let remaining = self.width.saturating_sub(label_screen_col);
+            let color = PEER_COLORS[idx % PEER_COLORS.len()];
+            let label: String = peer_name.chars().take(remaining).collect();
+            if label.is_empty() {
+                continue;
+            }
+            stdout.queue(cursor::MoveTo(label_screen_col as u16, peer_screen_row as u16))?;
+            stdout.queue(SetForegroundColor(Color::Black))?;
+            stdout.queue(crossterm::style::SetBackgroundColor(color))?;
+            write!(stdout, "{}", label)?;
+            stdout.queue(ResetColor)?;
+        }
+
+        self.render_status_bar(
+            &mut stdout,
+            buffer,
+            cursor_row,
+            cursor_col,
+            #[cfg(feature = "collab")]
+            collab_status,
+        )?;
         self.render_message_bar(&mut stdout, message)?;
 
         // Place the visible cursor at the editor cursor position.
@@ -192,18 +284,26 @@ impl Ui {
         buffer: &Buffer,
         cursor_row: usize,
         cursor_col: usize,
+        #[cfg(feature = "collab")] collab_status: Option<&str>,
     ) -> Result<()> {
         stdout.queue(SetAttribute(Attribute::Reverse))?;
         stdout.queue(Clear(ClearType::CurrentLine))?;
 
         let filename = buffer.display_name();
         let dirty_flag = if buffer.is_dirty() { " | [modified]" } else { "" };
+
+        #[cfg(feature = "collab")]
+        let collab_part = collab_status.map(|s| format!(" | {}", s)).unwrap_or_default();
+        #[cfg(not(feature = "collab"))]
+        let collab_part = String::new();
+
         let status = format!(
-            "{} | Ln {}, Col {}{}",
+            "{} | Ln {}, Col {}{}{}",
             filename,
             cursor_row + 1,
             cursor_col + 1,
             dirty_flag,
+            collab_part,
         );
 
         let padded = format!("{:<width$}", status, width = self.width);
