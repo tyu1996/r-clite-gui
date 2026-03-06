@@ -18,6 +18,10 @@ use crate::ui::{RenderState, Ui};
 #[cfg(feature = "collab")]
 use crate::collab::{CollabEvent, CollabHandle, CollabRole, OpKind};
 
+const TRANSIENT_MESSAGE_DURATION: Duration = Duration::from_secs(5);
+const STARTUP_HINT_DELAY: Duration = Duration::from_secs(5);
+const OPEN_CONFIRM_DURATION: Duration = Duration::from_secs(3);
+
 // Undo / Redo
 
 /// A single reversible edit stored as rope char-offset operations.
@@ -70,9 +74,12 @@ pub struct Editor {
     quit_count: u8,
     last_quit_at: Option<Instant>,
 
-    message: Option<(String, Instant)>,
+    transient_message: Option<(String, Instant)>,
+    persistent_message: Option<String>,
+    started_at: Instant,
 
-    save_prompt: Option<String>,
+    prompt: Option<PromptState>,
+    last_open_request_at: Option<Instant>,
 
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
@@ -91,6 +98,16 @@ pub struct Editor {
     /// Last cursor char-offset sent to peers (avoids redundant cursor msgs).
     #[cfg(feature = "collab")]
     last_sent_cursor: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptKind {
+    SaveAs,
+}
+
+struct PromptState {
+    kind: PromptKind,
+    input: String,
 }
 
 impl Editor {
@@ -127,13 +144,16 @@ impl Editor {
             col_offset: 0,
             quit_count: 0,
             last_quit_at: None,
-            message: None,
-            save_prompt: None,
+            transient_message: None,
+            persistent_message: None,
+            started_at: Instant::now(),
+            prompt: None,
+            last_open_request_at: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_insert_at: None,
             search: None,
-            save_depth: None,
+            save_depth: Some(0),
             should_quit: false,
             #[cfg(feature = "collab")]
             collab: None,
@@ -149,7 +169,7 @@ impl Editor {
 
     /// Run the editor event loop until the user quits.
     pub fn run(&mut self) -> Result<()> {
-        self.set_message("Ctrl+Q to quit  Ctrl+S save  Ctrl+Z undo  Ctrl+F find".to_string());
+        self.set_persistent_message("Ctrl+Q quit  Ctrl+O open  Ctrl+S save  Ctrl+F find".to_string());
 
         loop {
             if let Ok((w, h)) = crate::terminal::size() {
@@ -296,20 +316,25 @@ impl Editor {
     }
 
     fn set_message(&mut self, msg: String) {
-        self.message = Some((msg, Instant::now()));
+        self.transient_message = Some((msg, Instant::now()));
+    }
+
+    fn set_persistent_message(&mut self, msg: String) {
+        self.persistent_message = Some(msg);
     }
 
     fn current_message(&self) -> Option<&str> {
-        match &self.message {
-            Some((text, posted_at)) if posted_at.elapsed() < Duration::from_secs(5) => {
+        match &self.transient_message {
+            Some((text, posted_at)) if posted_at.elapsed() < TRANSIENT_MESSAGE_DURATION => {
                 Some(text.as_str())
             }
-            _ => None,
+            _ if self.started_at.elapsed() < STARTUP_HINT_DELAY => None,
+            _ => self.persistent_message.as_deref(),
         }
     }
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        if self.save_prompt.is_some() {
+        if self.prompt.is_some() {
             return self.handle_prompt_key(key);
         }
         if self.search.is_some() {
@@ -333,6 +358,7 @@ impl Editor {
             Command::InsertTab => self.handle_tab(),
             Command::Save => self.handle_save()?,
             Command::SaveAs => self.start_save_prompt(),
+            Command::Open => self.handle_open()?,
             Command::Undo => self.handle_undo(),
             Command::Redo => self.handle_redo(),
             Command::Find => self.start_search(),
@@ -624,8 +650,11 @@ impl Editor {
     }
 
     fn start_save_prompt(&mut self) {
-        self.save_prompt = Some(String::new());
-        self.set_message("Save as: ".to_string());
+        self.prompt = Some(PromptState {
+            kind: PromptKind::SaveAs,
+            input: String::new(),
+        });
+        self.set_prompt_message();
     }
 
     fn do_save(&mut self) {
@@ -642,47 +671,152 @@ impl Editor {
         }
     }
 
+    fn handle_open(&mut self) -> Result<()> {
+        #[cfg(feature = "collab")]
+        {
+            if self.collab.is_some() {
+                self.set_message("Open is unavailable during collaboration.".to_string());
+                return Ok(());
+            }
+        }
+
+        if self.buffer.is_dirty() {
+            let now = Instant::now();
+            let within_window = self
+                .last_open_request_at
+                .map(|t| now.duration_since(t) < OPEN_CONFIRM_DURATION)
+                .unwrap_or(false);
+
+            if !within_window {
+                self.last_open_request_at = Some(now);
+                self.set_message(
+                    "WARNING: File has unsaved changes. Press Ctrl+O again to choose a file."
+                        .to_string(),
+                );
+                return Ok(());
+            }
+        }
+
+        self.last_open_request_at = None;
+        self.pick_and_open_file()?;
+        Ok(())
+    }
+
+    fn pick_and_open_file(&mut self) -> Result<()> {
+        let initial_dir = self
+            .buffer
+            .path
+            .as_ref()
+            .and_then(|path| path.parent());
+
+        let selected = crate::terminal::suspend(|| crate::file_picker::pick_open_file(initial_dir))?;
+
+        match selected {
+            Some(path) if path.is_file() => self.open_path(path),
+            Some(_) => self.set_message("Open error: Selected path is not a file.".to_string()),
+            None => self.set_message("Open cancelled.".to_string()),
+        }
+
+        Ok(())
+    }
+
+    fn open_path(&mut self, path: PathBuf) {
+        match Buffer::open(path) {
+            Ok(buffer) => {
+                let name = buffer.display_name();
+                self.replace_buffer(buffer);
+                self.set_message(format!("Opened {}", name));
+            }
+            Err(e) => {
+                self.set_message(format!("Open error: {:#}", e));
+            }
+        }
+    }
+
+    fn replace_buffer(&mut self, buffer: Buffer) {
+        self.buffer = buffer;
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.desired_col = 0;
+        self.scroll_offset = 0;
+        self.col_offset = 0;
+        self.search = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.save_depth = Some(0);
+        self.last_insert_at = None;
+        self.last_open_request_at = None;
+        self.quit_count = 0;
+        self.last_quit_at = None;
+        #[cfg(feature = "collab")]
+        {
+            self.last_sent_cursor = None;
+        }
+        self.scroll_to_cursor();
+    }
+
     fn handle_prompt_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
-                let filename = self.save_prompt.take().unwrap_or_default();
-                if filename.is_empty() {
-                    self.set_message("Save cancelled.".to_string());
-                } else {
-                    match self.buffer.save_to(PathBuf::from(filename)) {
-                        Ok(bytes) => {
-                            let name = self.buffer.display_name();
-                            self.set_message(format!("{} written — {} bytes", name, bytes));
-                            self.save_depth = Some(self.undo_stack.len());
-                            self.last_insert_at = None;
-                        }
-                        Err(e) => {
-                            self.set_message(format!("Save error: {:#}", e));
+                let (kind, input) = match self.prompt.as_ref() {
+                    Some(prompt) => (prompt.kind, prompt.input.clone()),
+                    None => return Ok(()),
+                };
+
+                match kind {
+                    PromptKind::SaveAs => {
+                        self.prompt = None;
+                        if input.is_empty() {
+                            self.set_message("Save cancelled.".to_string());
+                        } else {
+                            match self.buffer.save_to(PathBuf::from(input)) {
+                                Ok(bytes) => {
+                                    let name = self.buffer.display_name();
+                                    self.set_message(format!("{} written — {} bytes", name, bytes));
+                                    self.save_depth = Some(self.undo_stack.len());
+                                    self.last_insert_at = None;
+                                }
+                                Err(e) => {
+                                    self.set_message(format!("Save error: {:#}", e));
+                                }
+                            }
                         }
                     }
                 }
             }
             KeyCode::Esc => {
-                self.save_prompt = None;
-                self.set_message("Save cancelled.".to_string());
+                let cancel_message = match self.prompt.as_ref().map(|prompt| prompt.kind) {
+                    Some(PromptKind::SaveAs) => "Save cancelled.".to_string(),
+                    None => return Ok(()),
+                };
+                self.prompt = None;
+                self.set_message(cancel_message);
             }
             KeyCode::Backspace => {
-                if let Some(ref mut s) = self.save_prompt {
-                    s.pop();
-                    let display = format!("Save as: {}", s);
-                    self.set_message(display);
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.input.pop();
                 }
+                self.set_prompt_message();
             }
             KeyCode::Char(ch) => {
-                if let Some(ref mut s) = self.save_prompt {
-                    s.push(ch);
-                    let display = format!("Save as: {}", s);
-                    self.set_message(display);
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.input.push(ch);
                 }
+                self.set_prompt_message();
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn set_prompt_message(&mut self) {
+        let message = match self.prompt.as_ref() {
+            Some(prompt) => match prompt.kind {
+                PromptKind::SaveAs => format!("Save as: {}", prompt.input),
+            },
+            None => return,
+        };
+        self.set_message(message);
     }
 
     fn start_search(&mut self) {
@@ -699,7 +833,6 @@ impl Editor {
     fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
-                // Cancel: restore original cursor position.
                 if let Some(s) = self.search.take() {
                     self.cursor_row = s.saved_cursor.0;
                     self.cursor_col = s.saved_cursor.1;
@@ -720,7 +853,6 @@ impl Editor {
                     let q = s.query.clone();
                     let msg = format!("Search: {}", q);
                     self.set_message(msg);
-                    // Re-search from beginning with new query.
                     self.search_from_start();
                 }
             }

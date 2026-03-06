@@ -18,6 +18,7 @@ crossterm = "0.28"
 ropey = "1.6"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+rfd = "0.15"
 
 tokio = { version = "1", features = ["full"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

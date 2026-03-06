@@ -41,3 +41,27 @@ impl Drop for RawModeGuard {
 pub fn size() -> Result<(u16, u16)> {
     Ok(terminal::size()?)
 }
+
+pub fn suspend<T, F>(action: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    terminal::disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+    io::stdout().flush()?;
+
+    struct ResumeGuard;
+
+    impl Drop for ResumeGuard {
+        fn drop(&mut self) {
+            let _ = terminal::enable_raw_mode();
+            let _ = execute!(io::stdout(), EnterAlternateScreen);
+            let _ = io::stdout().flush();
+        }
+    }
+
+    let resume = ResumeGuard;
+    let result = action();
+    drop(resume);
+    result
+}

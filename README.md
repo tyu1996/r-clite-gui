@@ -48,9 +48,12 @@ rcte
 
 | Key | Action |
 |-----|--------|
+| `Ctrl+O` | Open a file with the native system file picker |
 | `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save As (prompt for filename) |
 | `Ctrl+Q` | Quit (prompts if unsaved changes) |
+
+If the current buffer has unsaved changes, press `Ctrl+O` once to confirm discarding them and again within a few seconds to show the file picker.
 
 ### View
 

@@ -5,6 +5,7 @@
 mod buffer;
 mod config;
 mod editor;
+mod file_picker;
 mod highlight;
 mod keymap;
 mod terminal;

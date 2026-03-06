@@ -44,6 +44,8 @@ pub enum Command {
     Save,
     /// Save the buffer to a new path (Save As).
     SaveAs,
+    /// Open a file into the current editor.
+    Open,
     /// Undo the last edit operation.
     Undo,
     /// Redo the last undone operation.
@@ -95,6 +97,7 @@ pub fn map(event: KeyEvent) -> Command {
         }
         KeyCode::Char('S') if ctrl => Command::SaveAs,
         KeyCode::Char('s') if ctrl => Command::Save,
+        KeyCode::Char('o') if ctrl => Command::Open,
 
         // Undo / Redo
         KeyCode::Char('z') if ctrl => Command::Undo,
