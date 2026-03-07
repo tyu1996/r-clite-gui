@@ -14,6 +14,8 @@ mod ui;
 #[cfg(feature = "collab")]
 mod collab;
 
+#[cfg(feature = "collab")]
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -55,16 +57,20 @@ fn run() -> Result<()> {
             let buf = buffer::Buffer::open(host_file)?;
             let content: String = buf.rope.to_string();
             let username = whoami();
+            let host = discover_host_ip();
 
             let (port, collab_handle) =
-                collab::server::start_server(content, username)?;
+                collab::server::start_server(content, username, host.clone())?;
 
-            eprintln!("rcte: hosting on port {}", port);
+            eprintln!("rcte: hosting on {}:{}", host, port);
 
             let mut ed = editor::Editor::new(buf, cfg, Some(collab_handle))?;
-            if let Some(warn) = cfg_warning {
-                ed.set_startup_message(warn);
-            }
+            let host_message = format!("Hosting on {}:{}", host, port);
+            let startup_message = match cfg_warning {
+                Some(warn) => format!("{}  |  {}", warn, host_message),
+                None => host_message,
+            };
+            ed.set_startup_message(startup_message);
             return ed.run();
         }
 
@@ -110,6 +116,26 @@ fn whoami() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Best-effort discovery of the host's LAN IP address for sharing with guests.
+#[cfg(feature = "collab")]
+fn discover_host_ip() -> String {
+    let fallback = "127.0.0.1".to_string();
+    let socket = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(socket) => socket,
+        Err(_) => return fallback,
+    };
+
+    if socket.connect("8.8.8.8:80").is_err() {
+        return fallback;
+    }
+
+    match socket.local_addr() {
+        Ok(SocketAddr::V4(addr)) => IpAddr::V4(*addr.ip()).to_string(),
+        Ok(SocketAddr::V6(addr)) => IpAddr::V6(*addr.ip()).to_string(),
+        Err(_) => fallback,
+    }
 }
 
 /// Parse a "host:port" string into a `SocketAddr`.

@@ -77,7 +77,7 @@ pub struct CollabState {
 /// Whether this editor instance is acting as host or guest.
 #[derive(Debug, Clone)]
 pub enum CollabRole {
-    Host { port: u16 },
+    Host { host: String, port: u16 },
     Guest { host: String, port: u16 },
 }
 
@@ -150,7 +150,7 @@ impl CollabHandle {
         let connected = self.is_connected();
         let peers = self.peer_count();
         let role_str = match &self.role {
-            CollabRole::Host { port } => format!("[Host: {}]", port),
+            CollabRole::Host { host, port } => format!("[Host: {}:{}]", host, port),
             CollabRole::Guest { host, port } => format!("[Guest: {}:{}]", host, port),
         };
         if !connected {

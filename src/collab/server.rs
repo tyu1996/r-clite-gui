@@ -314,7 +314,7 @@ async fn handle_guest(
 /// bound port together with a `CollabHandle` for the host editor.
 ///
 /// The server runs in a background thread with its own Tokio runtime.
-pub fn start_server(initial_content: String, username: String) -> Result<(u16, CollabHandle)> {
+pub fn start_server(initial_content: String, username: String, host: String) -> Result<(u16, CollabHandle)> {
     // Channels between the editor (sync) and the async background tasks.
     let (op_tx, op_rx_std) = std::sync::mpsc::sync_channel::<(OpKind, usize, String)>(256);
     let (cursor_tx, cursor_rx_std) = std::sync::mpsc::sync_channel::<usize>(64);
@@ -382,7 +382,7 @@ pub fn start_server(initial_content: String, username: String) -> Result<(u16, C
     });
 
     let handle = CollabHandle {
-        role: CollabRole::Host { port },
+        role: CollabRole::Host { host, port },
         op_tx,
         cursor_tx,
         event_rx,
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn network_client_receives_initial_sync() {
-        let (port, _host) = start_server("test content".to_string(), "host".to_string())
+        let (port, _host) = start_server("test content".to_string(), "host".to_string(), "127.0.0.1".to_string())
             .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn network_disconnect_guest_does_not_crash_host() {
-        let (port, _host) = start_server("hello".to_string(), "host".to_string())
+        let (port, _host) = start_server("hello".to_string(), "host".to_string(), "127.0.0.1".to_string())
             .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn network_client_reconnect_gets_fresh_sync() {
-        let (port, _host) = start_server("data".to_string(), "host".to_string())
+        let (port, _host) = start_server("data".to_string(), "host".to_string(), "127.0.0.1".to_string())
             .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn network_convergence_different_positions() {
-        let (port, _host) = start_server("hello world".to_string(), "host".to_string())
+        let (port, _host) = start_server("hello world".to_string(), "host".to_string(), "127.0.0.1".to_string())
             .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn network_convergence_same_position_no_data_loss() {
-        let (port, _host) = start_server("abc".to_string(), "host".to_string())
+        let (port, _host) = start_server("abc".to_string(), "host".to_string(), "127.0.0.1".to_string())
             .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
