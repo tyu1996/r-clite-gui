@@ -18,19 +18,45 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Join { username: String },
-    Op { op: OpKind, pos: usize, text: String, rev: u64 },
-    Cursor { pos: usize },
+    Join {
+        username: String,
+    },
+    Op {
+        op: OpKind,
+        pos: usize,
+        text: String,
+        rev: u64,
+    },
+    Cursor {
+        pos: usize,
+    },
 }
 
 /// Message sent from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Sync { content: String, rev: u64, peers: Vec<String> },
-    Op { op: OpKind, pos: usize, text: String, rev: u64, peer: String },
-    PeerUpdate { peers: Vec<String>, event: PeerEvent, username: String },
-    Cursor { peer: String, pos: usize },
+    Sync {
+        content: String,
+        rev: u64,
+        peers: Vec<String>,
+    },
+    Op {
+        op: OpKind,
+        pos: usize,
+        text: String,
+        rev: u64,
+        peer: String,
+    },
+    PeerUpdate {
+        peers: Vec<String>,
+        event: PeerEvent,
+        username: String,
+    },
+    Cursor {
+        peer: String,
+        pos: usize,
+    },
 }
 
 /// The kind of text operation.
@@ -53,7 +79,13 @@ pub enum PeerEvent {
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
     /// A remote edit operation.
-    Edit { kind: OpKind, pos: usize, text: String, peer: String, rev: u64 },
+    Edit {
+        kind: OpKind,
+        pos: usize,
+        text: String,
+        peer: String,
+        rev: u64,
+    },
     /// Full document sync (on connect / reconnect).
     FullSync { content: String, rev: u64 },
     /// Peer list updated.
@@ -142,7 +174,10 @@ impl CollabHandle {
 
     /// A snapshot of all peer cursor positions (peer_username → char_offset).
     pub fn peer_cursors(&self) -> HashMap<String, usize> {
-        self.state.lock().map(|s| s.peer_cursors.clone()).unwrap_or_default()
+        self.state
+            .lock()
+            .map(|s| s.peer_cursors.clone())
+            .unwrap_or_default()
     }
 
     /// A short string describing the collab status for the status bar.
@@ -156,7 +191,12 @@ impl CollabHandle {
         if !connected {
             format!("{} [disconnected]", role_str)
         } else if peers > 0 {
-            format!("{} [{} peer{}]", role_str, peers, if peers == 1 { "" } else { "s" })
+            format!(
+                "{} [{} peer{}]",
+                role_str,
+                peers,
+                if peers == 1 { "" } else { "s" }
+            )
         } else {
             role_str
         }
@@ -232,10 +272,7 @@ mod tests {
     fn insert_vs_insert_client_after_server() {
         // Server inserted 3 chars at pos 2; client wants to insert at pos 5.
         // Client pos should shift right by 3.
-        let new_pos = transform_pos(
-            &OpKind::Insert, 5, "x",
-            &OpKind::Insert, 2, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Insert, 5, "x", &OpKind::Insert, 2, "abc");
         assert_eq!(new_pos, 8);
     }
 
@@ -243,96 +280,66 @@ mod tests {
     fn insert_vs_insert_client_before_server() {
         // Server inserted at pos 5; client wants to insert at pos 2.
         // Client pos unchanged.
-        let new_pos = transform_pos(
-            &OpKind::Insert, 2, "x",
-            &OpKind::Insert, 5, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Insert, 2, "x", &OpKind::Insert, 5, "abc");
         assert_eq!(new_pos, 2);
     }
 
     #[test]
     fn insert_vs_insert_same_position_server_wins() {
         // Both insert at pos 3; server wins → client shifts right.
-        let new_pos = transform_pos(
-            &OpKind::Insert, 3, "x",
-            &OpKind::Insert, 3, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Insert, 3, "x", &OpKind::Insert, 3, "abc");
         assert_eq!(new_pos, 6);
     }
 
     #[test]
     fn insert_vs_delete_client_before_deleted_range() {
-        let new_pos = transform_pos(
-            &OpKind::Insert, 1, "x",
-            &OpKind::Delete, 5, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Insert, 1, "x", &OpKind::Delete, 5, "abc");
         assert_eq!(new_pos, 1);
     }
 
     #[test]
     fn insert_vs_delete_client_inside_deleted_range() {
         // Server deleted chars 3-5; client wants to insert at 4 → collapses to 3.
-        let new_pos = transform_pos(
-            &OpKind::Insert, 4, "x",
-            &OpKind::Delete, 3, "ab",
-        );
+        let new_pos = transform_pos(&OpKind::Insert, 4, "x", &OpKind::Delete, 3, "ab");
         assert_eq!(new_pos, 3);
     }
 
     #[test]
     fn insert_vs_delete_client_after_deleted_range() {
-        let new_pos = transform_pos(
-            &OpKind::Insert, 8, "x",
-            &OpKind::Delete, 3, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Insert, 8, "x", &OpKind::Delete, 3, "abc");
         assert_eq!(new_pos, 5);
     }
 
     #[test]
     fn delete_vs_insert_client_after_insertion() {
         // Server inserted 2 chars at 3; client deletes at 5 → shift right by 2.
-        let new_pos = transform_pos(
-            &OpKind::Delete, 5, "x",
-            &OpKind::Insert, 3, "ab",
-        );
+        let new_pos = transform_pos(&OpKind::Delete, 5, "x", &OpKind::Insert, 3, "ab");
         assert_eq!(new_pos, 7);
     }
 
     #[test]
     fn delete_vs_insert_client_before_insertion() {
-        let new_pos = transform_pos(
-            &OpKind::Delete, 2, "x",
-            &OpKind::Insert, 5, "ab",
-        );
+        let new_pos = transform_pos(&OpKind::Delete, 2, "x", &OpKind::Insert, 5, "ab");
         assert_eq!(new_pos, 2);
     }
 
     #[test]
     fn delete_vs_delete_non_overlapping_client_after() {
         // Server deleted 3 chars at pos 0; client deletes at pos 5 → shift left by 3.
-        let new_pos = transform_pos(
-            &OpKind::Delete, 5, "x",
-            &OpKind::Delete, 0, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Delete, 5, "x", &OpKind::Delete, 0, "abc");
         assert_eq!(new_pos, 2);
     }
 
     #[test]
     fn delete_vs_delete_non_overlapping_client_before() {
-        let new_pos = transform_pos(
-            &OpKind::Delete, 1, "x",
-            &OpKind::Delete, 5, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Delete, 1, "x", &OpKind::Delete, 5, "abc");
         assert_eq!(new_pos, 1);
     }
 
     #[test]
     fn delete_vs_delete_client_inside_server_range() {
         // Server deleted chars 2-4; client deletes at 3 → collapses to 2.
-        let new_pos = transform_pos(
-            &OpKind::Delete, 3, "x",
-            &OpKind::Delete, 2, "abc",
-        );
+        let new_pos = transform_pos(&OpKind::Delete, 3, "x", &OpKind::Delete, 2, "abc");
         assert_eq!(new_pos, 2);
     }
 }
@@ -344,8 +351,8 @@ where
     T: Serialize,
 {
     use tokio::io::AsyncWriteExt;
-    let json = serde_json::to_vec(msg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json =
+        serde_json::to_vec(msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let len = json.len() as u32;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&json).await?;
@@ -364,6 +371,5 @@ where
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
-    serde_json::from_slice(&buf)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    serde_json::from_slice(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }

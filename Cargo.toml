@@ -9,6 +9,10 @@ license = "MIT"
 name = "rcte"
 path = "src/main.rs"
 
+[[bin]]
+name = "rcte-gui"
+path = "src/bin/rcte_gui.rs"
+
 [features]
 default = []
 collab = ["dep:tokio", "dep:serde", "dep:serde_json"]
@@ -18,12 +22,12 @@ crossterm = "0.28"
 ropey = "1.6"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+eframe = "0.33"
+egui = "0.33"
+rfd = "0.15"
 
 tokio = { version = "1", features = ["full"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-rfd = "0.15"
 
 [dev-dependencies]

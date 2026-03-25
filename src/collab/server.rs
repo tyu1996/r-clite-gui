@@ -13,8 +13,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::{
-    transform_pos, ClientMsg, CollabEvent, CollabHandle, CollabRole, CollabState, OpKind,
-    PeerEvent, ServerMsg, read_msg, write_msg,
+    ClientMsg, CollabEvent, CollabHandle, CollabRole, CollabState, OpKind, PeerEvent, ServerMsg,
+    read_msg, transform_pos, write_msg,
 };
 
 struct LoggedOp {
@@ -56,7 +56,14 @@ impl ServerState {
     fn add_peer(&mut self, username: String, tx: tokio_mpsc::UnboundedSender<ServerMsg>) -> u64 {
         let id = self.next_peer_id;
         self.next_peer_id += 1;
-        self.peers.insert(id, Peer { username, tx, cursor_pos: 0 });
+        self.peers.insert(
+            id,
+            Peer {
+                username,
+                tx,
+                cursor_pos: 0,
+            },
+        );
         id
     }
 
@@ -204,7 +211,14 @@ async fn handle_guest(
             },
             id,
         );
-        (id, ServerMsg::Sync { content, rev, peers })
+        (
+            id,
+            ServerMsg::Sync {
+                content,
+                rev,
+                peers,
+            },
+        )
     };
 
     // Update shared collab state.
@@ -220,7 +234,7 @@ async fn handle_guest(
         state.lock().unwrap().remove_peer(peer_id);
         return;
     }
-    let _ = AsyncWriteExt::flush(&mut writer).await;  // tokio BufWriter flush
+    let _ = AsyncWriteExt::flush(&mut writer).await; // tokio BufWriter flush
 
     // Spawn writer task.
     let (disconnect_tx, mut disconnect_rx) = tokio::sync::oneshot::channel::<()>();
@@ -314,7 +328,11 @@ async fn handle_guest(
 /// bound port together with a `CollabHandle` for the host editor.
 ///
 /// The server runs in a background thread with its own Tokio runtime.
-pub fn start_server(initial_content: String, username: String, host: String) -> Result<(u16, CollabHandle)> {
+pub fn start_server(
+    initial_content: String,
+    username: String,
+    host: String,
+) -> Result<(u16, CollabHandle)> {
     // Channels between the editor (sync) and the async background tasks.
     let (op_tx, op_rx_std) = std::sync::mpsc::sync_channel::<(OpKind, usize, String)>(256);
     let (cursor_tx, cursor_rx_std) = std::sync::mpsc::sync_channel::<usize>(64);
@@ -361,11 +379,16 @@ pub fn start_server(initial_content: String, username: String, host: String) -> 
             let state_clone = Arc::clone(&server_state);
             let ev_tx = event_tx_clone.clone();
             let uname = username.clone();
-            tokio::spawn(host_op_task(state_clone, tok_op_rx, tok_cursor_rx, uname, ev_tx));
+            tokio::spawn(host_op_task(
+                state_clone,
+                tok_op_rx,
+                tok_cursor_rx,
+                uname,
+                ev_tx,
+            ));
 
             // Accept loop.
-            let listener = tokio::net::TcpListener::from_std(listener)
-                .expect("convert listener");
+            let listener = tokio::net::TcpListener::from_std(listener).expect("convert listener");
 
             loop {
                 match listener.accept().await {
@@ -433,7 +456,10 @@ mod tests {
         // Client B inserts "BAR" at pos 11 (end of "hello world"), based on rev 0.
         // After OT, pos should shift right by 3 (len of "FOO").
         let (_, pos_b, text_b) = state.apply_op(OpKind::Insert, 11, "BAR".to_string(), 0);
-        assert_eq!(pos_b, 14, "expected pos shifted from 11 to 14 after FOO insert");
+        assert_eq!(
+            pos_b, 14,
+            "expected pos shifted from 11 to 14 after FOO insert"
+        );
         assert_eq!(text_b, "BAR");
         assert_eq!(state.revision, 2);
 
@@ -453,9 +479,21 @@ mod tests {
         state.apply_op(OpKind::Insert, 1, "Y".to_string(), 0);
 
         let final_content: String = state.rope.to_string();
-        assert!(final_content.contains('X'), "missing X: {:?}", final_content);
-        assert!(final_content.contains('Y'), "missing Y: {:?}", final_content);
-        assert!(final_content.contains('a'), "missing a: {:?}", final_content);
+        assert!(
+            final_content.contains('X'),
+            "missing X: {:?}",
+            final_content
+        );
+        assert!(
+            final_content.contains('Y'),
+            "missing Y: {:?}",
+            final_content
+        );
+        assert!(
+            final_content.contains('a'),
+            "missing a: {:?}",
+            final_content
+        );
         // All original chars preserved.
         assert_eq!(final_content.chars().filter(|&c| c == 'a').count(), 1);
     }
@@ -480,8 +518,12 @@ mod tests {
 
     #[test]
     fn network_client_receives_initial_sync() {
-        let (port, _host) = start_server("test content".to_string(), "host".to_string(), "127.0.0.1".to_string())
-            .expect("start server");
+        let (port, _host) = start_server(
+            "test content".to_string(),
+            "host".to_string(),
+            "127.0.0.1".to_string(),
+        )
+        .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
@@ -492,8 +534,12 @@ mod tests {
 
     #[test]
     fn network_disconnect_guest_does_not_crash_host() {
-        let (port, _host) = start_server("hello".to_string(), "host".to_string(), "127.0.0.1".to_string())
-            .expect("start server");
+        let (port, _host) = start_server(
+            "hello".to_string(),
+            "host".to_string(),
+            "127.0.0.1".to_string(),
+        )
+        .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
@@ -510,8 +556,12 @@ mod tests {
 
     #[test]
     fn network_client_reconnect_gets_fresh_sync() {
-        let (port, _host) = start_server("data".to_string(), "host".to_string(), "127.0.0.1".to_string())
-            .expect("start server");
+        let (port, _host) = start_server(
+            "data".to_string(),
+            "host".to_string(),
+            "127.0.0.1".to_string(),
+        )
+        .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
@@ -529,8 +579,12 @@ mod tests {
 
     #[test]
     fn network_convergence_different_positions() {
-        let (port, _host) = start_server("hello world".to_string(), "host".to_string(), "127.0.0.1".to_string())
-            .expect("start server");
+        let (port, _host) = start_server(
+            "hello world".to_string(),
+            "host".to_string(),
+            "127.0.0.1".to_string(),
+        )
+        .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
@@ -558,8 +612,12 @@ mod tests {
 
     #[test]
     fn network_convergence_same_position_no_data_loss() {
-        let (port, _host) = start_server("abc".to_string(), "host".to_string(), "127.0.0.1".to_string())
-            .expect("start server");
+        let (port, _host) = start_server(
+            "abc".to_string(),
+            "host".to_string(),
+            "127.0.0.1".to_string(),
+        )
+        .expect("start server");
         std::thread::sleep(Duration::from_millis(100));
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 

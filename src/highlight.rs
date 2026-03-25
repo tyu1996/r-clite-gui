@@ -15,19 +15,24 @@ pub struct Span {
 
 impl Span {
     fn plain(text: impl Into<String>) -> Self {
-        Self { text: text.into(), color: None }
+        Self {
+            text: text.into(),
+            color: None,
+        }
     }
     fn colored(text: impl Into<String>, color: Color) -> Self {
-        Self { text: text.into(), color: Some(color) }
+        Self {
+            text: text.into(),
+            color: Some(color),
+        }
     }
 }
 
 const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn",
-    "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
-    "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
-    "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "union", "unsafe", "use", "where", "while",
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "union",
+    "unsafe", "use", "where", "while",
 ];
 
 /// Highlight a single line of text for the given file extension.
@@ -55,10 +60,18 @@ fn push_plain(spans: &mut Vec<Span>, buf: &mut String) {
 
 fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bool) {
     let light = theme == "light";
-    let kw_color    = if light { Color::DarkBlue }   else { Color::Blue };
-    let str_color   = if light { Color::DarkGreen }  else { Color::Green };
-    let num_color   = if light { Color::DarkYellow } else { Color::Yellow };
-    let type_color  = if light { Color::DarkCyan }   else { Color::Cyan };
+    let kw_color = if light { Color::DarkBlue } else { Color::Blue };
+    let str_color = if light {
+        Color::DarkGreen
+    } else {
+        Color::Green
+    };
+    let num_color = if light {
+        Color::DarkYellow
+    } else {
+        Color::Yellow
+    };
+    let type_color = if light { Color::DarkCyan } else { Color::Cyan };
 
     let mut spans: Vec<Span> = Vec::new();
     let chars: Vec<char> = line.chars().collect();
@@ -79,14 +92,20 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
                 }
                 i += 1;
             }
-            spans.push(Span::colored(chars[start..i].iter().collect::<String>(), Color::DarkGrey));
+            spans.push(Span::colored(
+                chars[start..i].iter().collect::<String>(),
+                Color::DarkGrey,
+            ));
             continue;
         }
 
         // line comment
         if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
             push_plain(&mut spans, &mut plain);
-            spans.push(Span::colored(chars[i..].iter().collect::<String>(), Color::DarkGrey));
+            spans.push(Span::colored(
+                chars[i..].iter().collect::<String>(),
+                Color::DarkGrey,
+            ));
             return (spans, false);
         }
 
@@ -104,7 +123,10 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
                 }
                 i += 1;
             }
-            spans.push(Span::colored(chars[start..i].iter().collect::<String>(), Color::DarkGrey));
+            spans.push(Span::colored(
+                chars[start..i].iter().collect::<String>(),
+                Color::DarkGrey,
+            ));
             continue;
         }
 
@@ -114,29 +136,50 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             let start = i;
             i += 1;
             while i < len {
-                if chars[i] == '\\' { i += 2; }
-                else if chars[i] == '"' { i += 1; break; }
-                else { i += 1; }
+                if chars[i] == '\\' {
+                    i += 2;
+                } else if chars[i] == '"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
             }
-            spans.push(Span::colored(chars[start..i].iter().collect::<String>(), str_color));
+            spans.push(Span::colored(
+                chars[start..i].iter().collect::<String>(),
+                str_color,
+            ));
             continue;
         }
 
         // char literal
         if chars[i] == '\'' {
             // Distinguish lifetime annotations (`'a `) from char literals (`'a'`).
-            let is_lifetime = i + 1 < len && chars[i + 1].is_alphabetic()
-                && chars[i + 1..].iter().position(|&c| c == '\'').map(|p| p > 2).unwrap_or(true);
+            let is_lifetime = i + 1 < len
+                && chars[i + 1].is_alphabetic()
+                && chars[i + 1..]
+                    .iter()
+                    .position(|&c| c == '\'')
+                    .map(|p| p > 2)
+                    .unwrap_or(true);
             if !is_lifetime {
                 push_plain(&mut spans, &mut plain);
                 let start = i;
                 i += 1;
                 while i < len {
-                    if chars[i] == '\\' { i += 2; }
-                    else if chars[i] == '\'' { i += 1; break; }
-                    else { i += 1; }
+                    if chars[i] == '\\' {
+                        i += 2;
+                    } else if chars[i] == '\'' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
                 }
-                spans.push(Span::colored(chars[start..i].iter().collect::<String>(), str_color));
+                spans.push(Span::colored(
+                    chars[start..i].iter().collect::<String>(),
+                    str_color,
+                ));
                 continue;
             }
         }
@@ -145,10 +188,15 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
         if chars[i].is_ascii_digit() {
             push_plain(&mut spans, &mut plain);
             let start = i;
-            while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_') {
+            while i < len
+                && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
+            {
                 i += 1;
             }
-            spans.push(Span::colored(chars[start..i].iter().collect::<String>(), num_color));
+            spans.push(Span::colored(
+                chars[start..i].iter().collect::<String>(),
+                num_color,
+            ));
             continue;
         }
 
@@ -162,7 +210,12 @@ fn highlight_rust(line: &str, mut in_block: bool, theme: &str) -> (Vec<Span>, bo
             push_plain(&mut spans, &mut plain);
             if KEYWORDS.contains(&word.as_str()) {
                 spans.push(Span::colored(word, kw_color));
-            } else if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            } else if word
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+            {
                 spans.push(Span::colored(word, type_color));
             } else {
                 spans.push(Span::plain(word));

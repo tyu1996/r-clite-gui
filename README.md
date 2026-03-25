@@ -22,6 +22,22 @@ Open an empty unnamed buffer by omitting the filename:
 rcte
 ```
 
+## GUI
+
+Launch the GUI frontend with:
+
+```sh
+cargo run --bin rcte-gui -- myfile.txt
+```
+
+Or open an empty buffer:
+
+```sh
+cargo run --bin rcte-gui
+```
+
+The GUI uses the same editing core as the CLI. `Ctrl+O` opens a file, `Ctrl+S` saves, `Ctrl+Shift+S` saves as, `Ctrl+F` starts search, and the toolbar exposes the same actions with line numbers and status/message bars.
+
 ## Key Bindings
 
 ### Navigation

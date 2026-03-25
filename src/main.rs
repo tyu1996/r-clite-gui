@@ -1,25 +1,13 @@
-/// r-clite (rcte) — a minimal CLI text editor written in Rust.
-///
-/// This is the entry point. It handles only CLI argument parsing and
-/// delegates all work to the editor module.
-mod buffer;
-mod config;
-mod editor;
-mod file_picker;
-mod highlight;
-mod keymap;
-mod terminal;
-mod ui;
-
-#[cfg(feature = "collab")]
-mod collab;
-
 #[cfg(feature = "collab")]
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
+use r_clite::{buffer, config, editor};
+
+#[cfg(feature = "collab")]
+use r_clite::collab;
 
 /// rcte — a minimal CLI text editor.
 #[derive(Parser)]

@@ -79,9 +79,7 @@ impl Buffer {
         let slice = self.rope.line(idx);
         let s: String = slice.chars().collect();
         // Strip the trailing line ending (LF or CRLF).
-        s.trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_string()
+        s.trim_end_matches('\n').trim_end_matches('\r').to_string()
     }
 
     /// Length of line `idx` in Unicode scalar values (chars), excluding the
@@ -218,7 +216,9 @@ impl Buffer {
         if self.rope.len_chars() == 0 {
             return 0;
         }
-        let line_start = self.rope.line_to_char(row.min(self.rope.len_lines().saturating_sub(1)));
+        let line_start = self
+            .rope
+            .line_to_char(row.min(self.rope.len_lines().saturating_sub(1)));
         line_start + col
     }
 
@@ -543,7 +543,10 @@ mod tests {
         assert_eq!(bytes, 6);
         assert!(!buf.is_dirty());
         let mut content = String::new();
-        std::fs::File::open(&tmp).unwrap().read_to_string(&mut content).unwrap();
+        std::fs::File::open(&tmp)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
         assert_eq!(content, "hello\n");
         std::fs::remove_file(tmp).unwrap();
     }

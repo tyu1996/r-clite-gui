@@ -7,10 +7,9 @@ use std::io::{self, Write};
 
 use anyhow::Result;
 use crossterm::{
-    cursor,
+    QueueableCommand, cursor,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{Clear, ClearType},
-    QueueableCommand,
 };
 
 use crate::buffer::Buffer;
@@ -60,7 +59,12 @@ pub struct Ui {
 impl Ui {
     /// Create a new `Ui` sized to the given terminal dimensions.
     pub fn new(width: usize, height: usize) -> Self {
-        Self { width, height, show_line_numbers: true, theme: "dark".to_string() }
+        Self {
+            width,
+            height,
+            show_line_numbers: true,
+            theme: "dark".to_string(),
+        }
     }
 
     /// Number of rows available for text content.
@@ -134,7 +138,8 @@ impl Ui {
                 }
 
                 let line = buffer.line(file_row);
-                let (spans, next_block) = highlight::highlight_line(&line, file_ext, in_block_comment, &self.theme);
+                let (spans, next_block) =
+                    highlight::highlight_line(&line, file_ext, in_block_comment, &self.theme);
                 in_block_comment = next_block;
 
                 // Compute per-char absolute offsets for search highlighting.
@@ -172,7 +177,9 @@ impl Ui {
 
                         let abs_offset = line_char_start + char_pos;
                         let is_match = search_match
-                            .map(|(m_start, m_len)| abs_offset >= m_start && abs_offset < m_start + m_len)
+                            .map(|(m_start, m_len)| {
+                                abs_offset >= m_start && abs_offset < m_start + m_len
+                            })
                             .unwrap_or(false);
 
                         #[cfg(feature = "collab")]
@@ -250,7 +257,10 @@ impl Ui {
             if label.is_empty() {
                 continue;
             }
-            stdout.queue(cursor::MoveTo(label_screen_col as u16, peer_screen_row as u16))?;
+            stdout.queue(cursor::MoveTo(
+                label_screen_col as u16,
+                peer_screen_row as u16,
+            ))?;
             stdout.queue(SetForegroundColor(Color::Black))?;
             stdout.queue(crossterm::style::SetBackgroundColor(color))?;
             write!(stdout, "{}", label)?;
@@ -290,10 +300,16 @@ impl Ui {
         stdout.queue(Clear(ClearType::CurrentLine))?;
 
         let filename = buffer.display_name();
-        let dirty_flag = if buffer.is_dirty() { " | [modified]" } else { "" };
+        let dirty_flag = if buffer.is_dirty() {
+            " | [modified]"
+        } else {
+            ""
+        };
 
         #[cfg(feature = "collab")]
-        let collab_part = collab_status.map(|s| format!(" | {}", s)).unwrap_or_default();
+        let collab_part = collab_status
+            .map(|s| format!(" | {}", s))
+            .unwrap_or_default();
         #[cfg(not(feature = "collab"))]
         let collab_part = String::new();
 

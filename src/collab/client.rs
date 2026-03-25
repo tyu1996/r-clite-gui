@@ -94,9 +94,14 @@ async fn run_session(
     let mut writer = tokio::io::BufWriter::new(writer);
 
     // Send Join.
-    if write_msg(&mut writer, &ClientMsg::Join { username: username.to_string() })
-        .await
-        .is_err()
+    if write_msg(
+        &mut writer,
+        &ClientMsg::Join {
+            username: username.to_string(),
+        },
+    )
+    .await
+    .is_err()
     {
         return true;
     }
@@ -104,7 +109,11 @@ async fn run_session(
 
     // Wait for Sync.
     let (content, rev, peers) = match read_msg::<_, ServerMsg>(&mut reader).await {
-        Ok(ServerMsg::Sync { content, rev, peers }) => (content, rev, peers),
+        Ok(ServerMsg::Sync {
+            content,
+            rev,
+            peers,
+        }) => (content, rev, peers),
         _ => return true,
     };
 
@@ -126,7 +135,12 @@ async fn run_session(
     loop {
         // Drain local op queue and send.
         while let Ok((kind, pos, text)) = op_rx.try_recv() {
-            let msg = ClientMsg::Op { op: kind, pos, text, rev: local_rev };
+            let msg = ClientMsg::Op {
+                op: kind,
+                pos,
+                text,
+                rev: local_rev,
+            };
             if write_msg(&mut writer, &msg).await.is_err() {
                 return true;
             }
@@ -149,17 +163,33 @@ async fn run_session(
 
         match read_result {
             Ok(Ok(msg)) => match msg {
-                ServerMsg::Op { op, pos, text, rev, peer } => {
+                ServerMsg::Op {
+                    op,
+                    pos,
+                    text,
+                    rev,
+                    peer,
+                } => {
                     local_rev = rev;
                     if peer == username {
                         // This is the server's confirmation of our own local op; the
                         // edit was already applied optimistically — just update revision.
                         let _ = event_tx.try_send(CollabEvent::LocalConfirm { rev });
                     } else {
-                        let _ = event_tx.try_send(CollabEvent::Edit { kind: op, pos, text, peer, rev });
+                        let _ = event_tx.try_send(CollabEvent::Edit {
+                            kind: op,
+                            pos,
+                            text,
+                            peer,
+                            rev,
+                        });
                     }
                 }
-                ServerMsg::Sync { content, rev, peers } => {
+                ServerMsg::Sync {
+                    content,
+                    rev,
+                    peers,
+                } => {
                     local_rev = rev;
                     {
                         let mut s = state.lock().unwrap();
@@ -168,7 +198,11 @@ async fn run_session(
                     let _ = event_tx.try_send(CollabEvent::FullSync { content, rev });
                     let _ = event_tx.try_send(CollabEvent::PeersChanged { peers });
                 }
-                ServerMsg::PeerUpdate { peers, event, username: uname } => {
+                ServerMsg::PeerUpdate {
+                    peers,
+                    event,
+                    username: uname,
+                } => {
                     {
                         let mut s = state.lock().unwrap();
                         s.peers = peers.clone();
@@ -187,7 +221,7 @@ async fn run_session(
                 }
             },
             Ok(Err(_)) => return true, // connection error
-            Err(_) => {} // timeout — continue sending loop
+            Err(_) => {}               // timeout — continue sending loop
         }
     }
 }
@@ -232,7 +266,10 @@ pub fn connect_client(addr: SocketAddr, username: String) -> Result<CollabHandle
         .map_err(|_| anyhow::anyhow!("Connection timed out"))??;
 
     Ok(CollabHandle {
-        role: CollabRole::Guest { host: host_str, port },
+        role: CollabRole::Guest {
+            host: host_str,
+            port,
+        },
         op_tx,
         cursor_tx,
         event_rx,

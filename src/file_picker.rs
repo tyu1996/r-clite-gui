@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+#[cfg(target_os = "linux")]
+use anyhow::anyhow;
 
 #[cfg(not(target_os = "linux"))]
 use rfd::FileDialog;
