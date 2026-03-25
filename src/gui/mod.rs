@@ -541,40 +541,6 @@ impl GuiApp {
                         painter.rect_filled(line_rect, 2.0, current_line_bg);
                     }
 
-                    // Draw selection highlight for this line
-                    if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) =
-                        selection_range
-                    {
-                        if file_row >= sel_start_row && file_row <= sel_end_row {
-                            let line_len = self.core.buffer().line_len(file_row);
-                            let sel_start_on_line = if file_row == sel_start_row {
-                                sel_start_col
-                            } else {
-                                0
-                            };
-                            let sel_end_on_line = if file_row == sel_end_row {
-                                sel_end_col
-                            } else {
-                                line_len
-                            };
-
-                            if sel_start_on_line < sel_end_on_line {
-                                let sel_x_start = text_x
-                                    + (sel_start_on_line.saturating_sub(snapshot.col_offset)
-                                        as f32
-                                        * char_width);
-                                let sel_width = ((sel_end_on_line - sel_start_on_line) as f32
-                                    * char_width)
-                                    .max(2.0);
-                                let sel_rect = egui::Rect::from_min_size(
-                                    egui::pos2(sel_x_start.max(text_x), y),
-                                    Vec2::new(sel_width, row_height),
-                                );
-                                painter.rect_filled(sel_rect, 1.0, selection_bg);
-                            }
-                        }
-                    }
-
                     let line = self.core.buffer().line(file_row);
                     let line_start = self.core.buffer().char_offset_for(file_row, 0);
                     let (job, next_block_comment) = line_layout_job(
@@ -606,6 +572,50 @@ impl GuiApp {
                     let galley = painter.layout_job(job);
                     let text_origin = egui::pos2(text_x, y);
                     painter.galley(text_origin, galley.clone(), text_color);
+
+                    // Draw selection highlight using galley cursor geometry instead of
+                    // fixed char-width math so the highlight aligns exactly with text.
+                    if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) =
+                        selection_range
+                    {
+                        if file_row >= sel_start_row && file_row <= sel_end_row {
+                            let line_len = self.core.buffer().line_len(file_row);
+                            let line_sel_start = if file_row == sel_start_row {
+                                sel_start_col
+                            } else {
+                                0
+                            };
+                            let line_sel_end = if file_row == sel_end_row {
+                                sel_end_col
+                            } else {
+                                line_len
+                            };
+
+                            let visible_start = line_sel_start.max(snapshot.col_offset);
+                            let visible_end =
+                                line_sel_end.min(snapshot.col_offset.saturating_add(text_cols));
+
+                            if visible_start < visible_end {
+                                let start_cursor =
+                                    CCursor::new(visible_start.saturating_sub(snapshot.col_offset));
+                                let end_cursor =
+                                    CCursor::new(visible_end.saturating_sub(snapshot.col_offset));
+                                let start_rect = galley.pos_from_cursor(start_cursor);
+                                let end_rect = galley.pos_from_cursor(end_cursor);
+                                let sel_rect = egui::Rect::from_min_size(
+                                    egui::pos2(
+                                        text_origin.x + start_rect.min.x,
+                                        text_origin.y + start_rect.min.y,
+                                    ),
+                                    Vec2::new(
+                                        (end_rect.min.x - start_rect.min.x).max(2.0),
+                                        start_rect.height().max(row_height),
+                                    ),
+                                );
+                                painter.rect_filled(sel_rect, 1.0, selection_bg);
+                            }
+                        }
+                    }
 
                     if snapshot.cursor_row == file_row {
                         draw_cursor(
