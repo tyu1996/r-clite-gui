@@ -25,6 +25,7 @@ clap = { version = "4", features = ["derive"] }
 eframe = "0.33"
 egui = "0.33"
 rfd = "0.15"
+arboard = "3.4"
 
 tokio = { version = "1", features = ["full"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

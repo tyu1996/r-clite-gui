@@ -2653,6 +2653,7 @@ name = "r-clite"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "clap",
  "crossterm",
  "eframe",

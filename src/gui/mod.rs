@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
+use arboard::Clipboard;
 use eframe::egui::{
     self, text::CCursor, Align2, Color32, Context, FontId, Frame, Key, RichText, TextFormat,
     TextStyle, TopBottomPanel, Vec2, ViewportCommand,
@@ -41,6 +42,12 @@ pub fn launch(file: Option<PathBuf>) -> Result<()> {
 pub struct GuiApp {
     core: EditorCore,
     cached_viewport: ViewportMetrics,
+    clipboard: Option<Clipboard>,
+    // Mouse drag state for text selection
+    drag_start: Option<(usize, usize)>,
+    is_dragging: bool,
+    // Editor area rect for mouse interaction
+    editor_rect: Option<egui::Rect>,
 }
 
 impl GuiApp {
@@ -50,9 +57,18 @@ impl GuiApp {
             core.set_startup_message(warning);
         }
 
+        let clipboard = Clipboard::new().ok();
+        if clipboard.is_none() {
+            eprintln!("Warning: Could not initialize clipboard");
+        }
+
         Self {
             core,
             cached_viewport: ViewportMetrics { rows: 1, cols: 1 },
+            clipboard,
+            drag_start: None,
+            is_dragging: false,
+            editor_rect: None,
         }
     }
 
@@ -108,8 +124,121 @@ impl GuiApp {
                 }
                 handled
             }
+            // Mouse button press - start click or drag
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            } => {
+                if let Some((row, col)) = self.mouse_pos_to_row_col(pos) {
+                    if modifiers.shift {
+                        // Shift+click extends selection
+                        self.core.set_selection_end(row, col);
+                    } else {
+                        // Regular click - clear selection and position cursor
+                        self.core.clear_selection();
+                        self.core.set_cursor_position(row, col, self.cached_viewport);
+                        self.drag_start = Some((row, col));
+                    }
+                    self.is_dragging = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            // Mouse button release - end drag
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                ..
+            } => {
+                self.is_dragging = false;
+                self.drag_start = None;
+                true
+            }
+            // Mouse move - update selection during drag
+            egui::Event::PointerMoved(pos) => {
+                if self.is_dragging {
+                    if let Some((row, col)) = self.mouse_pos_to_row_col(pos) {
+                        if self.drag_start.is_some() {
+                            // Update selection end during drag
+                            self.core.set_selection_end(row, col);
+                            // Also update cursor position
+                            self.core.set_cursor_position(row, col, self.cached_viewport);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            // Mouse wheel scrolling
+            egui::Event::MouseWheel { delta, .. } => {
+                self.handle_scroll(delta);
+                true
+            }
             _ => false,
         }
+    }
+
+    /// Convert mouse position to (row, col) in the editor
+    fn mouse_pos_to_row_col(&self, pos: egui::Pos2) -> Option<(usize, usize)> {
+        let rect = self.editor_rect?;
+        let snapshot = self.core.snapshot();
+        let row_height = 18.0; // Matches font_metrics
+        let char_width = 8.0;  // Approximate char width
+        let gutter_chars = if snapshot.show_line_numbers {
+            self.core.buffer().line_count().to_string().len() + 1
+        } else {
+            0
+        };
+        let gutter_px = gutter_chars as f32 * char_width;
+        let text_x = rect.left() + PANEL_PADDING + gutter_px;
+        let text_y = rect.top() + PANEL_PADDING;
+
+        // Check if click is within editor area
+        if pos.x < text_x || pos.y < text_y {
+            return None;
+        }
+
+        // Calculate row and col
+        let rel_y = pos.y - text_y;
+        let rel_x = pos.x - text_x;
+        let row = (rel_y / row_height).floor() as usize + snapshot.scroll_offset;
+        let col = (rel_x / char_width).floor() as usize + snapshot.col_offset;
+
+        // Clamp to valid range
+        let max_row = self.core.buffer().line_count().saturating_sub(1);
+        let clamped_row = row.min(max_row);
+        let line_len = self.core.buffer().line_len(clamped_row);
+        let clamped_col = col.min(line_len);
+
+        Some((clamped_row, clamped_col))
+    }
+
+    fn handle_scroll(&mut self, delta: egui::Vec2) {
+        let lines = (delta.y / 18.0).round() as isize; // 18.0 is row_height
+        if lines > 0 {
+            self.scroll_down(lines as usize);
+        } else if lines < 0 {
+            self.scroll_up((-lines) as usize);
+        }
+    }
+
+    fn scroll_up(&mut self, lines: usize) {
+        self.core.set_scroll_offset(
+            self.core.snapshot().scroll_offset.saturating_sub(lines)
+        );
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        let snapshot = self.core.snapshot();
+        let max_scroll = self.core.buffer().line_count().saturating_sub(1);
+        let new_scroll = (snapshot.scroll_offset + lines).min(max_scroll);
+        self.core.set_scroll_offset(new_scroll);
     }
 
     fn handle_search_event(&mut self, ctx: &Context, event: egui::Event) -> bool {
@@ -162,6 +291,57 @@ impl GuiApp {
     }
 
     fn apply_command(&mut self, ctx: &Context, command: Command) -> bool {
+        // Handle clipboard operations directly in GUI
+        match command {
+            Command::Copy => {
+                if let Some(text) = self.core.get_selected_text() {
+                    if let Some(ref mut clipboard) = self.clipboard {
+                        if let Err(e) = clipboard.set_text(text) {
+                            self.core.set_message(format!("Copy failed: {}", e));
+                        } else {
+                            self.core.set_message("Copied to clipboard".to_string());
+                        }
+                    } else {
+                        self.core.set_message("Clipboard not available".to_string());
+                    }
+                }
+                return true;
+            }
+            Command::Paste => {
+                if let Some(ref mut clipboard) = self.clipboard {
+                    match clipboard.get_text() {
+                        Ok(text) => {
+                            self.core.insert_text_at_cursor(&text, self.cached_viewport);
+                            self.core.set_message("Pasted from clipboard".to_string());
+                        }
+                        Err(e) => {
+                            self.core.set_message(format!("Paste failed: {}", e));
+                        }
+                    }
+                } else {
+                    self.core.set_message("Clipboard not available".to_string());
+                }
+                return true;
+            }
+            Command::Cut => {
+                if self.core.has_selection() {
+                    if let Some(text) = self.core.delete_selection() {
+                        if let Some(ref mut clipboard) = self.clipboard {
+                            if let Err(e) = clipboard.set_text(text) {
+                                self.core.set_message(format!("Cut failed: {}", e));
+                            } else {
+                                self.core.set_message("Cut to clipboard".to_string());
+                            }
+                        } else {
+                            self.core.set_message("Clipboard not available".to_string());
+                        }
+                    }
+                }
+                return true;
+            }
+            _ => {}
+        }
+
         let request = match self.core.apply_command(command, self.cached_viewport) {
             Ok(request) => request,
             Err(err) => {
@@ -278,6 +458,7 @@ impl GuiApp {
                 );
 
                 let rect = ui.available_rect_before_wrap();
+                self.editor_rect = Some(rect);
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 0.0, background_color(self.core.theme()));
 
@@ -306,6 +487,24 @@ impl GuiApp {
                 let visible_rows = self.cached_viewport.rows.max(1);
                 let last_line = (first_line + visible_rows).min(line_count);
                 let mut in_block_comment = false;
+                let selection_bg = selection_bg_color(self.core.theme());
+
+                // Get normalized selection range if there is one
+                let selection_range = if let (Some(start), Some(end)) = (snapshot.selection_start, snapshot.selection_end) {
+                    let norm_start = if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
+                        start
+                    } else {
+                        end
+                    };
+                    let norm_end = if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
+                        end
+                    } else {
+                        start
+                    };
+                    Some((norm_start, norm_end))
+                } else {
+                    None
+                };
 
                 for (row_index, file_row) in (first_line..last_line).enumerate() {
                     let y = rect.top() + PANEL_PADDING + row_index as f32 * row_height;
@@ -315,6 +514,33 @@ impl GuiApp {
                     );
                     if snapshot.cursor_row == file_row {
                         painter.rect_filled(line_rect, 2.0, current_line_bg);
+                    }
+
+                    // Draw selection highlight for this line
+                    if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) = selection_range {
+                        if file_row >= sel_start_row && file_row <= sel_end_row {
+                            let line_len = self.core.buffer().line_len(file_row);
+                            let sel_start_on_line = if file_row == sel_start_row {
+                                sel_start_col
+                            } else {
+                                0
+                            };
+                            let sel_end_on_line = if file_row == sel_end_row {
+                                sel_end_col
+                            } else {
+                                line_len
+                            };
+
+                            if sel_start_on_line < sel_end_on_line {
+                                let sel_x_start = text_x + (sel_start_on_line.saturating_sub(snapshot.col_offset) as f32 * char_width);
+                                let sel_width = ((sel_end_on_line - sel_start_on_line) as f32 * char_width).max(2.0);
+                                let sel_rect = egui::Rect::from_min_size(
+                                    egui::pos2(sel_x_start.max(text_x), y),
+                                    Vec2::new(sel_width, row_height),
+                                );
+                                painter.rect_filled(sel_rect, 1.0, selection_bg);
+                            }
+                        }
                     }
 
                     let line = self.core.buffer().line(file_row);
@@ -421,6 +647,10 @@ fn map_shortcut(key: Key, modifiers: egui::Modifiers) -> Option<Command> {
         Key::Y => Some(Command::Redo),
         Key::F => Some(Command::Find),
         Key::L => Some(Command::ToggleLineNumbers),
+        Key::C => Some(Command::Copy),
+        Key::V => Some(Command::Paste),
+        Key::X => Some(Command::Cut),
+        Key::A => Some(Command::SelectAll),
         _ => None,
     }
 }
@@ -547,6 +777,14 @@ fn search_bg_color(theme: &str) -> Color32 {
         Color32::from_rgba_unmultiplied(220, 170, 35, 72)
     } else {
         Color32::from_rgba_unmultiplied(255, 198, 88, 72)
+    }
+}
+
+fn selection_bg_color(theme: &str) -> Color32 {
+    if theme == "light" {
+        Color32::from_rgba_unmultiplied(66, 133, 244, 100)
+    } else {
+        Color32::from_rgba_unmultiplied(66, 133, 244, 120)
     }
 }
 
@@ -749,5 +987,35 @@ mod tests {
             false,
         );
         assert!(next_block_comment);
+    }
+
+    #[test]
+    fn shortcut_mapping_handles_clipboard_commands() {
+        let mut mods = egui::Modifiers::default();
+        mods.ctrl = true;
+
+        // Test Copy (Cmd/Ctrl+C)
+        assert_eq!(map_shortcut(Key::C, mods), Some(Command::Copy));
+        
+        // Test Paste (Cmd/Ctrl+V)
+        assert_eq!(map_shortcut(Key::V, mods), Some(Command::Paste));
+        
+        // Test Cut (Cmd/Ctrl+X)
+        assert_eq!(map_shortcut(Key::X, mods), Some(Command::Cut));
+        
+        // Test Select All (Cmd/Ctrl+A)
+        assert_eq!(map_shortcut(Key::A, mods), Some(Command::SelectAll));
+    }
+
+    #[test]
+    fn shortcut_mapping_command_key_works_for_clipboard() {
+        // Test that the command key (Cmd on macOS, Ctrl on Linux/Windows) works
+        let mut mods = egui::Modifiers::default();
+        mods.command = true;
+
+        assert_eq!(map_shortcut(Key::C, mods), Some(Command::Copy));
+        assert_eq!(map_shortcut(Key::V, mods), Some(Command::Paste));
+        assert_eq!(map_shortcut(Key::X, mods), Some(Command::Cut));
+        assert_eq!(map_shortcut(Key::A, mods), Some(Command::SelectAll));
     }
 }

@@ -54,6 +54,14 @@ pub enum Command {
     Find,
     /// Toggle line number display.
     ToggleLineNumbers,
+    /// Copy selection to clipboard.
+    Copy,
+    /// Paste from clipboard at cursor.
+    Paste,
+    /// Cut selection to clipboard.
+    Cut,
+    /// Select all text in the document.
+    SelectAll,
     /// No-op — the key has no binding in the current context.
     None,
 }

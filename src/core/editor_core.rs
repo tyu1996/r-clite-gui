@@ -52,6 +52,8 @@ pub struct ViewSnapshot {
     pub theme: String,
     pub should_quit: bool,
     pub search: Option<SearchStateSnapshot>,
+    pub selection_start: Option<(usize, usize)>,
+    pub selection_end: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +104,9 @@ pub struct EditorCore {
     search: Option<SearchState>,
     save_depth: Option<usize>,
     should_quit: bool,
+    // Selection state for copy/cut operations
+    selection_start: Option<(usize, usize)>,
+    selection_end: Option<(usize, usize)>,
 }
 
 impl EditorCore {
@@ -128,6 +133,8 @@ impl EditorCore {
             search: None,
             save_depth: Some(0),
             should_quit: false,
+            selection_start: None,
+            selection_end: None,
         }
     }
 
@@ -181,6 +188,8 @@ impl EditorCore {
                 query: state.query.clone(),
                 current_match: state.current_match,
             }),
+            selection_start: self.selection_start,
+            selection_end: self.selection_end,
         }
     }
 
@@ -194,6 +203,67 @@ impl EditorCore {
 
     pub fn set_persistent_message(&mut self, msg: String) {
         self.persistent_message = Some(msg);
+    }
+
+    // Selection methods
+    pub fn has_selection(&self) -> bool {
+        self.selection_start.is_some() && self.selection_end.is_some()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+    }
+
+    pub fn set_selection_start(&mut self, row: usize, col: usize) {
+        self.selection_start = Some((row, col));
+        self.selection_end = Some((row, col));
+    }
+
+    pub fn set_selection_end(&mut self, row: usize, col: usize) {
+        self.selection_end = Some((row, col));
+    }
+
+    /// Get the selected text, if any. Returns (start_pos, end_pos, text)
+    pub fn get_selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let start = self.selection_start?;
+        let end = self.selection_end?;
+        Some((start, end))
+    }
+
+    /// Normalize selection so start <= end
+    fn normalize_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (start, end) = self.get_selection_range()?;
+        // Compare by row first, then by column
+        if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
+            Some((start, end))
+        } else {
+            Some((end, start))
+        }
+    }
+
+    pub fn get_selected_text(&self) -> Option<String> {
+        let (start, end) = self.normalize_selection()?;
+        let start_offset = self.buffer.char_offset_for(start.0, start.1);
+        let end_offset = self.buffer.char_offset_for(end.0, end.1);
+        let text: String = self.buffer.rope.slice(start_offset..end_offset).into();
+        Some(text)
+    }
+
+    /// Set cursor position directly (for mouse clicks)
+    pub fn set_cursor_position(&mut self, row: usize, col: usize, viewport: ViewportMetrics) {
+        let max_row = self.buffer.line_count().saturating_sub(1);
+        self.cursor_row = row.min(max_row);
+        let line_len = self.buffer.line_len(self.cursor_row);
+        self.cursor_col = col.min(line_len);
+        self.desired_col = self.cursor_col;
+        self.last_insert_at = None;
+        self.scroll_to_cursor(viewport);
+    }
+
+    /// Set scroll offset directly (for mouse wheel scrolling)
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset;
     }
 
     pub fn apply_command(
@@ -278,6 +348,22 @@ impl EditorCore {
             Command::ToggleLineNumbers => {
                 self.show_line_numbers = !self.show_line_numbers;
                 self.scroll_to_cursor(viewport);
+                None
+            }
+            Command::Copy => {
+                // Selection text is retrieved by GUI for clipboard
+                None
+            }
+            Command::Paste => {
+                // Text is inserted by GUI after retrieving from clipboard
+                None
+            }
+            Command::Cut => {
+                // Selection is cut by GUI (get text, then delete)
+                None
+            }
+            Command::SelectAll => {
+                self.handle_select_all();
                 None
             }
             Command::None => None,
@@ -883,6 +969,88 @@ impl EditorCore {
         }
     }
 
+    fn handle_select_all(&mut self) {
+        let last_row = self.buffer.line_count().saturating_sub(1);
+        let last_col = self.buffer.line_len(last_row);
+        self.selection_start = Some((0, 0));
+        self.selection_end = Some((last_row, last_col));
+    }
+
+    /// Insert text at cursor position (for paste operations)
+    pub fn insert_text_at_cursor(&mut self, text: &str, viewport: ViewportMetrics) {
+        if text.is_empty() {
+            return;
+        }
+
+        // Clear any existing selection
+        self.clear_selection();
+
+        let start_pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+        let start_row = self.cursor_row;
+        let start_col = self.cursor_col;
+        let mut row = self.cursor_row;
+        let mut col = self.cursor_col;
+
+        // Insert each character, handling newlines
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.buffer.insert_newline(row, col);
+                row += 1;
+                col = 0;
+            } else {
+                self.buffer.insert_char(row, col, ch);
+                col += 1;
+            }
+        }
+
+        // Update cursor position to end of inserted text
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.desired_col = col;
+
+        // Record undo entry
+        self.push_undo(
+            vec![EditOp::Insert {
+                pos: start_pos,
+                text: text.to_string(),
+            }],
+            (start_row, start_col),
+            (self.cursor_row, self.cursor_col),
+        );
+
+        self.last_insert_at = Some(Instant::now());
+        if !self.redo_stack.is_empty() {
+            self.save_depth = None;
+        }
+        self.redo_stack.clear();
+        self.scroll_to_cursor(viewport);
+    }
+
+    /// Delete the current selection and return the deleted text
+    pub fn delete_selection(&mut self) -> Option<String> {
+        let (start, end) = self.normalize_selection()?;
+        let start_offset = self.buffer.char_offset_for(start.0, start.1);
+        let end_offset = self.buffer.char_offset_for(end.0, end.1);
+        let len = end_offset - start_offset;
+
+        if len == 0 {
+            return Some(String::new());
+        }
+
+        let text = self.buffer.rope.slice(start_offset..end_offset).into();
+        self.buffer.raw_delete(start_offset, len);
+
+        // Move cursor to start of selection
+        self.cursor_row = start.0;
+        self.cursor_col = start.1;
+        self.desired_col = start.1;
+
+        // Clear selection
+        self.clear_selection();
+
+        Some(text)
+    }
+
     fn handle_quit(&mut self) {
         if self.buffer.is_dirty() {
             let now = Instant::now();
@@ -1085,5 +1253,143 @@ mod tests {
 
         core.apply_command(Command::Quit, viewport()).unwrap();
         assert!(core.should_quit());
+    }
+
+    // Tests for new selection and clipboard functionality
+    #[test]
+    fn set_cursor_position_clamps_to_valid_range() {
+        let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
+        
+        // Test setting cursor within valid range
+        core.set_cursor_position(0, 3, viewport());
+        assert_eq!(core.cursor_row, 0);
+        assert_eq!(core.cursor_col, 3);
+        
+        // Test clamping row to max
+        core.set_cursor_position(100, 0, viewport());
+        assert_eq!(core.cursor_row, 1); // max row (2 lines - 1)
+        
+        // Test clamping col to line length
+        core.set_cursor_position(0, 100, viewport());
+        assert_eq!(core.cursor_row, 0);
+        assert_eq!(core.cursor_col, 5); // "hello" length
+    }
+
+    #[test]
+    fn handle_select_all_selects_entire_document() {
+        let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
+        
+        core.handle_select_all();
+        
+        assert!(core.has_selection());
+        assert_eq!(core.selection_start, Some((0, 0)));
+        assert_eq!(core.selection_end, Some((1, 5))); // row 1, "world" length
+    }
+
+    #[test]
+    fn selection_state_is_maintained_correctly() {
+        let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
+        
+        // Initially no selection
+        assert!(!core.has_selection());
+        assert_eq!(core.get_selection_range(), None);
+        
+        // Set selection start
+        core.set_selection_start(0, 2);
+        assert!(core.has_selection());
+        assert_eq!(core.selection_start, Some((0, 2)));
+        assert_eq!(core.selection_end, Some((0, 2)));
+        
+        // Update selection end
+        core.set_selection_end(1, 3);
+        assert_eq!(core.selection_start, Some((0, 2)));
+        assert_eq!(core.selection_end, Some((1, 3)));
+        
+        // Clear selection
+        core.clear_selection();
+        assert!(!core.has_selection());
+        assert_eq!(core.selection_start, None);
+        assert_eq!(core.selection_end, None);
+    }
+
+    #[test]
+    fn get_selected_text_returns_correct_text() {
+        let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
+        
+        // Select "ell" from first line
+        core.set_selection_start(0, 1);
+        core.set_selection_end(0, 4);
+        
+        let selected = core.get_selected_text();
+        assert_eq!(selected, Some("ell".to_string()));
+        
+        // Select across lines
+        core.set_selection_start(0, 3);
+        core.set_selection_end(1, 2);
+        
+        let selected = core.get_selected_text();
+        assert_eq!(selected, Some("lo\nwo".to_string()));
+    }
+
+    #[test]
+    fn select_all_command_works() {
+        let mut core = EditorCore::new(Buffer::from_content("abc\ndef".to_string()), config());
+        
+        core.apply_command(Command::SelectAll, viewport()).unwrap();
+        
+        let snapshot = core.snapshot();
+        assert_eq!(snapshot.selection_start, Some((0, 0)));
+        assert_eq!(snapshot.selection_end, Some((1, 3)));
+    }
+
+    #[test]
+    fn insert_text_at_cursor_works() {
+        let mut core = EditorCore::new(Buffer::from_content("hello world".to_string()), config());
+        
+        // Position cursor and insert text
+        core.set_cursor_position(0, 6, viewport());
+        core.insert_text_at_cursor("beautiful ", viewport());
+        
+        assert_eq!(core.buffer().line(0), "hello beautiful world");
+        assert_eq!(core.cursor_col, 16); // 6 + "beautiful ".len()
+    }
+
+    #[test]
+    fn insert_text_with_newlines() {
+        let mut core = EditorCore::new(Buffer::new_empty(), config());
+        
+        core.insert_text_at_cursor("line1\nline2\nline3", viewport());
+        
+        assert_eq!(core.buffer().line_count(), 3);
+        assert_eq!(core.buffer().line(0), "line1");
+        assert_eq!(core.buffer().line(1), "line2");
+        assert_eq!(core.buffer().line(2), "line3");
+    }
+
+    #[test]
+    fn delete_selection_removes_text() {
+        let mut core = EditorCore::new(Buffer::from_content("hello world".to_string()), config());
+        
+        // Select "world" and delete it
+        core.set_selection_start(0, 6);
+        core.set_selection_end(0, 11);
+        let deleted = core.delete_selection();
+        
+        assert_eq!(deleted, Some("world".to_string()));
+        assert_eq!(core.buffer().line(0), "hello ");
+        assert_eq!(core.cursor_col, 6); // Cursor at start of selection
+        assert!(!core.has_selection()); // Selection cleared
+    }
+
+    #[test]
+    fn set_scroll_offset_works() {
+        let mut core = EditorCore::new(Buffer::from_content("a\nb\nc\nd\ne\nf".to_string()), config());
+        
+        core.set_scroll_offset(3);
+        assert_eq!(core.snapshot().scroll_offset, 3);
+        
+        // Should not panic with large values
+        core.set_scroll_offset(100);
+        assert_eq!(core.snapshot().scroll_offset, 100);
     }
 }
