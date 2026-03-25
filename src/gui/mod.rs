@@ -4,8 +4,8 @@ use std::time::Duration;
 use anyhow::Result;
 use arboard::Clipboard;
 use eframe::egui::{
-    self, text::CCursor, Align2, Color32, Context, FontId, Frame, Key, RichText, TextFormat,
-    TextStyle, TopBottomPanel, Vec2, ViewportCommand,
+    self, Align2, Color32, Context, FontId, Frame, Key, RichText, TextFormat, TextStyle,
+    TopBottomPanel, Vec2, ViewportCommand, text::CCursor,
 };
 use egui::text::LayoutJob;
 
@@ -93,6 +93,14 @@ impl GuiApp {
                 modifiers,
                 ..
             } => {
+                if modifiers.shift {
+                    if let Some(command) = selection_movement_command(key) {
+                        return self.extend_selection_with_command(ctx, command);
+                    }
+                } else if is_cursor_movement_key(key) {
+                    self.core.clear_selection();
+                }
+
                 if let Some(command) = map_shortcut(key, modifiers) {
                     return self.apply_command(ctx, command);
                 }
@@ -136,9 +144,10 @@ impl GuiApp {
                         // Shift+click extends selection
                         self.core.set_selection_end(row, col);
                     } else {
-                        // Regular click - clear selection and position cursor
-                        self.core.clear_selection();
-                        self.core.set_cursor_position(row, col, self.cached_viewport);
+                        // Regular click - anchor selection start and position cursor
+                        self.core.set_selection_start(row, col);
+                        self.core
+                            .set_cursor_position(row, col, self.cached_viewport);
                         self.drag_start = Some((row, col));
                     }
                     self.is_dragging = true;
@@ -165,7 +174,8 @@ impl GuiApp {
                             // Update selection end during drag
                             self.core.set_selection_end(row, col);
                             // Also update cursor position
-                            self.core.set_cursor_position(row, col, self.cached_viewport);
+                            self.core
+                                .set_cursor_position(row, col, self.cached_viewport);
                         }
                         true
                     } else {
@@ -189,7 +199,7 @@ impl GuiApp {
         let rect = self.editor_rect?;
         let snapshot = self.core.snapshot();
         let row_height = 18.0; // Matches font_metrics
-        let char_width = 8.0;  // Approximate char width
+        let char_width = 8.0; // Approximate char width
         let gutter_chars = if snapshot.show_line_numbers {
             self.core.buffer().line_count().to_string().len() + 1
         } else {
@@ -229,9 +239,8 @@ impl GuiApp {
     }
 
     fn scroll_up(&mut self, lines: usize) {
-        self.core.set_scroll_offset(
-            self.core.snapshot().scroll_offset.saturating_sub(lines)
-        );
+        self.core
+            .set_scroll_offset(self.core.snapshot().scroll_offset.saturating_sub(lines));
     }
 
     fn scroll_down(&mut self, lines: usize) {
@@ -325,7 +334,7 @@ impl GuiApp {
             }
             Command::Cut => {
                 if self.core.has_selection() {
-                    if let Some(text) = self.core.delete_selection() {
+                    if let Some(text) = self.core.cut_selection(self.cached_viewport) {
                         if let Some(ref mut clipboard) = self.clipboard {
                             if let Err(e) = clipboard.set_text(text) {
                                 self.core.set_message(format!("Cut failed: {}", e));
@@ -382,6 +391,20 @@ impl GuiApp {
         if self.core.should_quit() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
+    }
+
+    fn extend_selection_with_command(&mut self, ctx: &Context, command: Command) -> bool {
+        let before = self.core.snapshot();
+        if !self.core.has_selection() {
+            self.core
+                .set_selection_start(before.cursor_row, before.cursor_col);
+        }
+
+        let handled = self.apply_command(ctx, command);
+        let after = self.core.snapshot();
+        self.core
+            .set_selection_end(after.cursor_row, after.cursor_col);
+        handled
     }
 
     fn render_chrome(&mut self, ctx: &Context) {
@@ -490,7 +513,9 @@ impl GuiApp {
                 let selection_bg = selection_bg_color(self.core.theme());
 
                 // Get normalized selection range if there is one
-                let selection_range = if let (Some(start), Some(end)) = (snapshot.selection_start, snapshot.selection_end) {
+                let selection_range = if let (Some(start), Some(end)) =
+                    (snapshot.selection_start, snapshot.selection_end)
+                {
                     let norm_start = if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
                         start
                     } else {
@@ -517,7 +542,9 @@ impl GuiApp {
                     }
 
                     // Draw selection highlight for this line
-                    if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) = selection_range {
+                    if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) =
+                        selection_range
+                    {
                         if file_row >= sel_start_row && file_row <= sel_end_row {
                             let line_len = self.core.buffer().line_len(file_row);
                             let sel_start_on_line = if file_row == sel_start_row {
@@ -532,8 +559,13 @@ impl GuiApp {
                             };
 
                             if sel_start_on_line < sel_end_on_line {
-                                let sel_x_start = text_x + (sel_start_on_line.saturating_sub(snapshot.col_offset) as f32 * char_width);
-                                let sel_width = ((sel_end_on_line - sel_start_on_line) as f32 * char_width).max(2.0);
+                                let sel_x_start = text_x
+                                    + (sel_start_on_line.saturating_sub(snapshot.col_offset)
+                                        as f32
+                                        * char_width);
+                                let sel_width = ((sel_end_on_line - sel_start_on_line) as f32
+                                    * char_width)
+                                    .max(2.0);
                                 let sel_rect = egui::Rect::from_min_size(
                                     egui::pos2(sel_x_start.max(text_x), y),
                                     Vec2::new(sel_width, row_height),
@@ -653,6 +685,24 @@ fn map_shortcut(key: Key, modifiers: egui::Modifiers) -> Option<Command> {
         Key::A => Some(Command::SelectAll),
         _ => None,
     }
+}
+
+fn selection_movement_command(key: Key) -> Option<Command> {
+    match key {
+        Key::ArrowUp => Some(Command::MoveUp),
+        Key::ArrowDown => Some(Command::MoveDown),
+        Key::ArrowLeft => Some(Command::MoveLeft),
+        Key::ArrowRight => Some(Command::MoveRight),
+        Key::Home => Some(Command::MoveLineStart),
+        Key::End => Some(Command::MoveLineEnd),
+        Key::PageUp => Some(Command::PageUp),
+        Key::PageDown => Some(Command::PageDown),
+        _ => None,
+    }
+}
+
+fn is_cursor_movement_key(key: Key) -> bool {
+    selection_movement_command(key).is_some()
 }
 
 fn pick_open_file(initial_dir: Option<&Path>) -> Option<PathBuf> {
@@ -947,6 +997,19 @@ mod tests {
     }
 
     #[test]
+    fn selection_movement_maps_arrow_and_home_end() {
+        assert_eq!(
+            selection_movement_command(Key::ArrowLeft),
+            Some(Command::MoveLeft)
+        );
+        assert_eq!(
+            selection_movement_command(Key::End),
+            Some(Command::MoveLineEnd)
+        );
+        assert_eq!(selection_movement_command(Key::A), None);
+    }
+
+    #[test]
     fn viewport_metrics_never_zero() {
         let viewport = viewport_from_size(Vec2::splat(0.0), 12.0, 18.0, true, 999);
         assert!(viewport.rows >= 1);
@@ -996,13 +1059,13 @@ mod tests {
 
         // Test Copy (Cmd/Ctrl+C)
         assert_eq!(map_shortcut(Key::C, mods), Some(Command::Copy));
-        
+
         // Test Paste (Cmd/Ctrl+V)
         assert_eq!(map_shortcut(Key::V, mods), Some(Command::Paste));
-        
+
         // Test Cut (Cmd/Ctrl+X)
         assert_eq!(map_shortcut(Key::X, mods), Some(Command::Cut));
-        
+
         // Test Select All (Cmd/Ctrl+A)
         assert_eq!(map_shortcut(Key::A, mods), Some(Command::SelectAll));
     }

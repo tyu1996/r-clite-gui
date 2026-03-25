@@ -207,7 +207,7 @@ impl EditorCore {
 
     // Selection methods
     pub fn has_selection(&self) -> bool {
-        self.selection_start.is_some() && self.selection_end.is_some()
+        self.selection_text_range().is_some()
     }
 
     pub fn clear_selection(&mut self) {
@@ -243,11 +243,27 @@ impl EditorCore {
     }
 
     pub fn get_selected_text(&self) -> Option<String> {
+        let (start_offset, end_offset) = self.selection_text_range()?;
+        let text: String = self.buffer.rope.slice(start_offset..end_offset).into();
+        Some(text)
+    }
+
+    fn selection_text_range(&self) -> Option<(usize, usize)> {
         let (start, end) = self.normalize_selection()?;
         let start_offset = self.buffer.char_offset_for(start.0, start.1);
         let end_offset = self.buffer.char_offset_for(end.0, end.1);
+        if start_offset < end_offset {
+            Some((start_offset, end_offset))
+        } else {
+            None
+        }
+    }
+
+    fn selected_text_and_bounds(&self) -> Option<(usize, usize, String, (usize, usize))> {
+        let (start, _end) = self.normalize_selection()?;
+        let (start_offset, end_offset) = self.selection_text_range()?;
         let text: String = self.buffer.rope.slice(start_offset..end_offset).into();
-        Some(text)
+        Some((start_offset, end_offset, text, start))
     }
 
     /// Set cursor position directly (for mouse clicks)
@@ -581,6 +597,11 @@ impl EditorCore {
     }
 
     fn handle_insert_char(&mut self, ch: char, viewport: ViewportMetrics) {
+        if self.has_selection() {
+            self.replace_selection_with_text(&ch.to_string(), viewport);
+            return;
+        }
+
         let pos = self
             .buffer
             .char_offset_for(self.cursor_row, self.cursor_col);
@@ -637,6 +658,11 @@ impl EditorCore {
     }
 
     fn handle_backspace(&mut self, viewport: ViewportMetrics) {
+        if self.has_selection() {
+            self.delete_selection_with_undo(viewport);
+            return;
+        }
+
         let pos = self
             .buffer
             .char_offset_for(self.cursor_row, self.cursor_col);
@@ -674,6 +700,11 @@ impl EditorCore {
     }
 
     fn handle_delete(&mut self, viewport: ViewportMetrics) {
+        if self.has_selection() {
+            self.delete_selection_with_undo(viewport);
+            return;
+        }
+
         let pos = self
             .buffer
             .char_offset_for(self.cursor_row, self.cursor_col);
@@ -706,6 +737,11 @@ impl EditorCore {
     }
 
     fn handle_newline(&mut self, viewport: ViewportMetrics) {
+        if self.has_selection() {
+            self.replace_selection_with_text("\n", viewport);
+            return;
+        }
+
         let pos = self
             .buffer
             .char_offset_for(self.cursor_row, self.cursor_col);
@@ -732,6 +768,12 @@ impl EditorCore {
     }
 
     fn handle_tab(&mut self, viewport: ViewportMetrics) {
+        if self.has_selection() {
+            let spaces = " ".repeat(self.tab_width);
+            self.replace_selection_with_text(&spaces, viewport);
+            return;
+        }
+
         let spaces = " ".repeat(self.tab_width);
         let pos = self
             .buffer
@@ -982,16 +1024,34 @@ impl EditorCore {
             return;
         }
 
-        // Clear any existing selection
-        self.clear_selection();
+        if self.has_selection() {
+            self.replace_selection_with_text(text, viewport);
+        } else {
+            self.insert_text_no_selection(text, viewport);
+        }
+    }
 
-        let start_pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+    /// Delete the current selection and return the deleted text
+    pub fn delete_selection(&mut self) -> Option<String> {
+        let (start_offset, end_offset, text, start) = self.selected_text_and_bounds()?;
+        self.buffer
+            .raw_delete(start_offset, end_offset - start_offset);
+        self.cursor_row = start.0;
+        self.cursor_col = start.1;
+        self.desired_col = start.1;
+        self.clear_selection();
+        Some(text)
+    }
+
+    fn insert_text_no_selection(&mut self, text: &str, viewport: ViewportMetrics) {
+        let start_pos = self
+            .buffer
+            .char_offset_for(self.cursor_row, self.cursor_col);
         let start_row = self.cursor_row;
         let start_col = self.cursor_col;
         let mut row = self.cursor_row;
         let mut col = self.cursor_col;
 
-        // Insert each character, handling newlines
         for ch in text.chars() {
             if ch == '\n' {
                 self.buffer.insert_newline(row, col);
@@ -1003,12 +1063,10 @@ impl EditorCore {
             }
         }
 
-        // Update cursor position to end of inserted text
         self.cursor_row = row;
         self.cursor_col = col;
         self.desired_col = col;
 
-        // Record undo entry
         self.push_undo(
             vec![EditOp::Insert {
                 pos: start_pos,
@@ -1017,38 +1075,92 @@ impl EditorCore {
             (start_row, start_col),
             (self.cursor_row, self.cursor_col),
         );
+        self.finish_edit(viewport, true);
+    }
 
-        self.last_insert_at = Some(Instant::now());
+    fn replace_selection_with_text(&mut self, text: &str, viewport: ViewportMetrics) {
+        let (start_offset, end_offset, deleted_text, start) = match self.selected_text_and_bounds()
+        {
+            Some(data) => data,
+            None => {
+                self.insert_text_no_selection(text, viewport);
+                return;
+            }
+        };
+
+        self.buffer
+            .raw_delete(start_offset, end_offset - start_offset);
+        self.cursor_row = start.0;
+        self.cursor_col = start.1;
+        self.desired_col = start.1;
+
+        let mut ops = vec![EditOp::Delete {
+            pos: start_offset,
+            text: deleted_text,
+        }];
+
+        if !text.is_empty() {
+            self.buffer.raw_insert(start_offset, text);
+            let inserted_len = text.chars().count();
+            let (new_row, new_col) = self.buffer.offset_to_row_col(start_offset + inserted_len);
+            self.cursor_row = new_row;
+            self.cursor_col = new_col;
+            self.desired_col = new_col;
+            ops.push(EditOp::Insert {
+                pos: start_offset,
+                text: text.to_string(),
+            });
+        }
+
+        self.clear_selection();
+        self.push_undo(
+            ops,
+            start,
+            if text.is_empty() {
+                start
+            } else {
+                (self.cursor_row, self.cursor_col)
+            },
+        );
+        self.finish_edit(viewport, !text.is_empty());
+    }
+
+    fn delete_selection_with_undo(&mut self, viewport: ViewportMetrics) {
+        let (start_offset, _end_offset, deleted_text, start) = match self.selected_text_and_bounds()
+        {
+            Some(data) => data,
+            None => return,
+        };
+
+        self.delete_selection();
+        self.push_undo(
+            vec![EditOp::Delete {
+                pos: start_offset,
+                text: deleted_text,
+            }],
+            start,
+            start,
+        );
+        self.finish_edit(viewport, false);
+    }
+
+    pub fn cut_selection(&mut self, viewport: ViewportMetrics) -> Option<String> {
+        let text = self.get_selected_text()?;
+        self.delete_selection_with_undo(viewport);
+        Some(text)
+    }
+
+    fn finish_edit(&mut self, viewport: ViewportMetrics, merge_next_insert: bool) {
+        self.last_insert_at = if merge_next_insert {
+            Some(Instant::now())
+        } else {
+            None
+        };
         if !self.redo_stack.is_empty() {
             self.save_depth = None;
         }
         self.redo_stack.clear();
         self.scroll_to_cursor(viewport);
-    }
-
-    /// Delete the current selection and return the deleted text
-    pub fn delete_selection(&mut self) -> Option<String> {
-        let (start, end) = self.normalize_selection()?;
-        let start_offset = self.buffer.char_offset_for(start.0, start.1);
-        let end_offset = self.buffer.char_offset_for(end.0, end.1);
-        let len = end_offset - start_offset;
-
-        if len == 0 {
-            return Some(String::new());
-        }
-
-        let text = self.buffer.rope.slice(start_offset..end_offset).into();
-        self.buffer.raw_delete(start_offset, len);
-
-        // Move cursor to start of selection
-        self.cursor_row = start.0;
-        self.cursor_col = start.1;
-        self.desired_col = start.1;
-
-        // Clear selection
-        self.clear_selection();
-
-        Some(text)
     }
 
     fn handle_quit(&mut self) {
@@ -1259,16 +1371,16 @@ mod tests {
     #[test]
     fn set_cursor_position_clamps_to_valid_range() {
         let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
-        
+
         // Test setting cursor within valid range
         core.set_cursor_position(0, 3, viewport());
         assert_eq!(core.cursor_row, 0);
         assert_eq!(core.cursor_col, 3);
-        
+
         // Test clamping row to max
         core.set_cursor_position(100, 0, viewport());
         assert_eq!(core.cursor_row, 1); // max row (2 lines - 1)
-        
+
         // Test clamping col to line length
         core.set_cursor_position(0, 100, viewport());
         assert_eq!(core.cursor_row, 0);
@@ -1278,9 +1390,9 @@ mod tests {
     #[test]
     fn handle_select_all_selects_entire_document() {
         let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
-        
+
         core.handle_select_all();
-        
+
         assert!(core.has_selection());
         assert_eq!(core.selection_start, Some((0, 0)));
         assert_eq!(core.selection_end, Some((1, 5))); // row 1, "world" length
@@ -1289,22 +1401,23 @@ mod tests {
     #[test]
     fn selection_state_is_maintained_correctly() {
         let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
-        
+
         // Initially no selection
         assert!(!core.has_selection());
         assert_eq!(core.get_selection_range(), None);
-        
+
         // Set selection start
         core.set_selection_start(0, 2);
-        assert!(core.has_selection());
+        assert!(!core.has_selection());
         assert_eq!(core.selection_start, Some((0, 2)));
         assert_eq!(core.selection_end, Some((0, 2)));
-        
+
         // Update selection end
         core.set_selection_end(1, 3);
+        assert!(core.has_selection());
         assert_eq!(core.selection_start, Some((0, 2)));
         assert_eq!(core.selection_end, Some((1, 3)));
-        
+
         // Clear selection
         core.clear_selection();
         assert!(!core.has_selection());
@@ -1315,18 +1428,18 @@ mod tests {
     #[test]
     fn get_selected_text_returns_correct_text() {
         let mut core = EditorCore::new(Buffer::from_content("hello\nworld".to_string()), config());
-        
+
         // Select "ell" from first line
         core.set_selection_start(0, 1);
         core.set_selection_end(0, 4);
-        
+
         let selected = core.get_selected_text();
         assert_eq!(selected, Some("ell".to_string()));
-        
+
         // Select across lines
         core.set_selection_start(0, 3);
         core.set_selection_end(1, 2);
-        
+
         let selected = core.get_selected_text();
         assert_eq!(selected, Some("lo\nwo".to_string()));
     }
@@ -1334,9 +1447,9 @@ mod tests {
     #[test]
     fn select_all_command_works() {
         let mut core = EditorCore::new(Buffer::from_content("abc\ndef".to_string()), config());
-        
+
         core.apply_command(Command::SelectAll, viewport()).unwrap();
-        
+
         let snapshot = core.snapshot();
         assert_eq!(snapshot.selection_start, Some((0, 0)));
         assert_eq!(snapshot.selection_end, Some((1, 3)));
@@ -1345,11 +1458,11 @@ mod tests {
     #[test]
     fn insert_text_at_cursor_works() {
         let mut core = EditorCore::new(Buffer::from_content("hello world".to_string()), config());
-        
+
         // Position cursor and insert text
         core.set_cursor_position(0, 6, viewport());
         core.insert_text_at_cursor("beautiful ", viewport());
-        
+
         assert_eq!(core.buffer().line(0), "hello beautiful world");
         assert_eq!(core.cursor_col, 16); // 6 + "beautiful ".len()
     }
@@ -1357,9 +1470,9 @@ mod tests {
     #[test]
     fn insert_text_with_newlines() {
         let mut core = EditorCore::new(Buffer::new_empty(), config());
-        
+
         core.insert_text_at_cursor("line1\nline2\nline3", viewport());
-        
+
         assert_eq!(core.buffer().line_count(), 3);
         assert_eq!(core.buffer().line(0), "line1");
         assert_eq!(core.buffer().line(1), "line2");
@@ -1369,12 +1482,12 @@ mod tests {
     #[test]
     fn delete_selection_removes_text() {
         let mut core = EditorCore::new(Buffer::from_content("hello world".to_string()), config());
-        
+
         // Select "world" and delete it
         core.set_selection_start(0, 6);
         core.set_selection_end(0, 11);
         let deleted = core.delete_selection();
-        
+
         assert_eq!(deleted, Some("world".to_string()));
         assert_eq!(core.buffer().line(0), "hello ");
         assert_eq!(core.cursor_col, 6); // Cursor at start of selection
@@ -1382,12 +1495,43 @@ mod tests {
     }
 
     #[test]
+    fn insert_char_replaces_selection_in_single_undo_step() {
+        let mut core = EditorCore::new(Buffer::from_content("hello world".to_string()), config());
+        core.set_selection_start(0, 6);
+        core.set_selection_end(0, 11);
+
+        core.apply_command(Command::InsertChar('R'), viewport())
+            .unwrap();
+        assert_eq!(core.buffer().line(0), "hello R");
+
+        core.apply_command(Command::Undo, viewport()).unwrap();
+        assert_eq!(core.buffer().line(0), "hello world");
+    }
+
+    #[test]
+    fn cut_selection_is_undoable() {
+        let mut core = EditorCore::new(Buffer::from_content("abc def".to_string()), config());
+        core.set_selection_start(0, 4);
+        core.set_selection_end(0, 7);
+
+        let cut = core.cut_selection(viewport());
+        assert_eq!(cut.as_deref(), Some("def"));
+        assert_eq!(core.buffer().line(0), "abc ");
+
+        core.apply_command(Command::Undo, viewport()).unwrap();
+        assert_eq!(core.buffer().line(0), "abc def");
+    }
+
+    #[test]
     fn set_scroll_offset_works() {
-        let mut core = EditorCore::new(Buffer::from_content("a\nb\nc\nd\ne\nf".to_string()), config());
-        
+        let mut core = EditorCore::new(
+            Buffer::from_content("a\nb\nc\nd\ne\nf".to_string()),
+            config(),
+        );
+
         core.set_scroll_offset(3);
         assert_eq!(core.snapshot().scroll_offset, 3);
-        
+
         // Should not panic with large values
         core.set_scroll_offset(100);
         assert_eq!(core.snapshot().scroll_offset, 100);
