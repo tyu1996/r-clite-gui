@@ -653,6 +653,14 @@ impl GuiApp {
                 }
             });
     }
+
+    pub fn core(&self) -> &EditorCore {
+        &self.core
+    }
+
+    pub fn editor_rect(&self) -> Option<egui::Rect> {
+        self.editor_rect
+    }
 }
 
 impl eframe::App for GuiApp {
