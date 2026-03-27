@@ -1,12 +1,10 @@
-#![allow(dead_code)]
-
 use egui_kittest::Harness;
 use r_clite::{buffer::Buffer, config::Config, gui::GuiApp};
 
 fn make_harness(content: &str) -> Harness<'_, GuiApp> {
     let buffer = Buffer::from_content(content.to_string());
     let mut harness = Harness::new_eframe(|_cc| GuiApp::new(buffer, Config::default(), None));
-    harness.run_steps(2);
+    harness.run_steps(2); // two frames: initial layout + repaint flush
     harness
 }
 
@@ -36,11 +34,12 @@ fn ctrl_key(key: egui::Key) -> egui::Event {
 
 /// Compute the pixel origin of the text area (top-left of char at row 0, col 0).
 /// Uses the known constants from gui/mod.rs: PANEL_PADDING=12.0, char_width=8.0, row_height=18.0.
+#[allow(dead_code)]
 fn editor_text_origin(harness: &Harness<GuiApp>) -> egui::Pos2 {
     let rect = harness
         .state()
         .editor_rect()
-        .expect("editor_rect is None — make sure harness.run() was called");
+        .expect("editor_rect is None — make sure harness.run_steps(2) was called");
     let line_count = harness.state().core().buffer().line_count();
     let show_ln = harness.state().core().snapshot().show_line_numbers;
     let gutter_chars = if show_ln {
@@ -76,7 +75,7 @@ fn empty_buffer_starts_with_one_line() {
 fn text_event_inserts_chars_into_buffer() {
     let mut harness = make_harness("");
     harness.event(egui::Event::Text("hello".to_owned()));
-    harness.run_steps(2);
+    harness.run_steps(2); // two frames: initial layout + repaint flush
     assert_eq!(harness.state().core().buffer().line(0), "hello");
 }
 
@@ -84,9 +83,9 @@ fn text_event_inserts_chars_into_buffer() {
 fn backspace_key_removes_last_typed_char() {
     let mut harness = make_harness("");
     harness.event(egui::Event::Text("ab".to_owned()));
-    harness.run_steps(2);
+    harness.run_steps(2); // two frames: initial layout + repaint flush
     harness.event(plain_key(egui::Key::Backspace));
-    harness.run_steps(2);
+    harness.run_steps(2); // two frames: initial layout + repaint flush
     assert_eq!(harness.state().core().buffer().line(0), "a");
 }
 
@@ -94,8 +93,8 @@ fn backspace_key_removes_last_typed_char() {
 fn enter_key_splits_line() {
     let mut harness = make_harness("");
     harness.event(egui::Event::Text("ab".to_owned()));
-    harness.run_steps(2);
+    harness.run_steps(2); // two frames: initial layout + repaint flush
     harness.event(plain_key(egui::Key::Enter));
-    harness.run_steps(2);
+    harness.run_steps(2); // two frames: initial layout + repaint flush
     assert_eq!(harness.state().core().buffer().line_count(), 2);
 }
