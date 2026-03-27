@@ -34,7 +34,6 @@ fn ctrl_key(key: egui::Key) -> egui::Event {
 
 /// Compute the pixel origin of the text area (top-left of char at row 0, col 0).
 /// Uses the known constants from gui/mod.rs: PANEL_PADDING=12.0, char_width=8.0, row_height=18.0.
-#[allow(dead_code)]
 fn editor_text_origin(harness: &Harness<GuiApp>) -> egui::Pos2 {
     let rect = harness
         .state()
@@ -211,4 +210,94 @@ fn click_without_drag_clears_selection() {
     });
     harness.run_steps(2); // two frames: initial layout + repaint flush
     assert!(!harness.state().core().has_selection());
+}
+
+// ── Hotkey integration ───────────────────────────────────────────────────────
+
+#[test]
+fn ctrl_z_undoes_typed_text() {
+    let mut harness = make_harness("");
+    harness.event(egui::Event::Text("hello".to_owned()));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().buffer().line(0), "hello");
+
+    harness.event(ctrl_key(egui::Key::Z));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().buffer().line(0), "");
+}
+
+#[test]
+fn ctrl_y_redoes_undone_edit() {
+    let mut harness = make_harness("");
+    harness.event(egui::Event::Text("hello".to_owned()));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    harness.event(ctrl_key(egui::Key::Z)); // undo
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    harness.event(ctrl_key(egui::Key::Y)); // redo
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().buffer().line(0), "hello");
+}
+
+#[test]
+fn ctrl_f_activates_search_mode() {
+    let mut harness = make_harness("hello\n");
+    harness.event(ctrl_key(egui::Key::F));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(harness.state().core().snapshot().search.is_some());
+}
+
+#[test]
+fn ctrl_q_sets_should_quit_on_clean_buffer() {
+    // Buffer::from_content marks dirty=false; no edits → clean
+    let mut harness = make_harness("hello\n");
+    harness.event(ctrl_key(egui::Key::Q));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(harness.state().core().snapshot().should_quit);
+}
+
+#[test]
+fn ctrl_l_toggles_line_numbers() {
+    let mut harness = make_harness("");
+    let initial = harness.state().core().snapshot().show_line_numbers;
+    harness.event(ctrl_key(egui::Key::L));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(
+        harness.state().core().snapshot().show_line_numbers,
+        !initial
+    );
+}
+
+#[test]
+fn ctrl_a_selects_all_text() {
+    let mut harness = make_harness("hello world\n");
+    harness.event(ctrl_key(egui::Key::A));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(harness.state().core().has_selection());
+}
+
+#[test]
+fn ctrl_x_cuts_selected_text_from_buffer() {
+    let mut harness = make_harness("hello world\n");
+    harness.event(ctrl_key(egui::Key::A)); // select all
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    harness.event(ctrl_key(egui::Key::X)); // cut
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    // The selected text is deleted from the buffer regardless of clipboard availability
+    assert_eq!(harness.state().core().buffer().rope.to_string(), "");
+}
+
+#[test]
+fn shift_arrow_right_extends_selection() {
+    let mut harness = make_harness("hello\n");
+    let mut mods = egui::Modifiers::default();
+    mods.shift = true;
+    harness.event(egui::Event::Key {
+        key: egui::Key::ArrowRight,
+        pressed: true,
+        modifiers: mods,
+        repeat: false,
+        physical_key: None,
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(harness.state().core().has_selection());
 }
