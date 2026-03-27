@@ -95,3 +95,73 @@ fn page_up_reduces_row_after_page_down() {
     core.apply_command(Command::PageUp, vp()).unwrap();
     assert!(core.snapshot().cursor_row < row_after);
 }
+
+// ── Text editing ─────────────────────────────────────────────────────────────
+
+#[test]
+fn insert_tab_expands_to_four_spaces() {
+    let mut core = make_core("");
+    core.apply_command(Command::InsertTab, vp()).unwrap();
+    assert_eq!(core.buffer().line(0), "    "); // 4 spaces (default tab_width)
+    assert_eq!(core.snapshot().cursor_col, 4);
+}
+
+#[test]
+fn insert_newline_splits_line_at_cursor() {
+    let mut core = make_core("abcd\n");
+    // Move to col 2 (between 'b' and 'c')
+    core.apply_command(Command::MoveRight, vp()).unwrap();
+    core.apply_command(Command::MoveRight, vp()).unwrap();
+    core.apply_command(Command::InsertNewline, vp()).unwrap();
+    // "ab" on line 0, "cd" on line 1, "" on line 2
+    assert_eq!(core.buffer().line_count(), 3);
+    assert_eq!(core.buffer().line(0), "ab");
+    assert_eq!(core.buffer().line(1), "cd");
+    assert_eq!(core.snapshot().cursor_row, 1);
+    assert_eq!(core.snapshot().cursor_col, 0);
+}
+
+// ── Dirty flag ───────────────────────────────────────────────────────────────
+
+#[test]
+fn fresh_buffer_is_not_dirty() {
+    let core = make_core("some content");
+    assert!(!core.buffer().is_dirty());
+}
+
+#[test]
+fn insert_char_marks_buffer_dirty() {
+    let mut core = make_core("");
+    core.apply_command(Command::InsertChar('x'), vp()).unwrap();
+    assert!(core.buffer().is_dirty());
+}
+
+#[test]
+fn line_count_increases_after_newline_insertion() {
+    let mut core = make_core("hello\n");
+    assert_eq!(core.buffer().line_count(), 2); // "hello", ""
+    core.apply_command(Command::InsertNewline, vp()).unwrap();
+    assert_eq!(core.buffer().line_count(), 3);
+}
+
+// ── Search ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn search_with_no_match_leaves_search_match_none() {
+    let mut core = make_core("hello world\n");
+    core.start_search();
+    core.set_search_query("xyz".to_string(), vp());
+    assert_eq!(core.snapshot().search_match, None);
+}
+
+// ── Selection ────────────────────────────────────────────────────────────────
+
+#[test]
+fn selection_across_lines_includes_newline() {
+    let mut core = make_core("ab\ncd\n");
+    // Select from start of row 0 to start of row 1 — covers "ab\n"
+    core.set_selection_start(0, 0);
+    core.set_selection_end(1, 0);
+    let text = core.get_selected_text().unwrap();
+    assert_eq!(text, "ab\n");
+}
