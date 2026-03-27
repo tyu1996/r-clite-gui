@@ -98,3 +98,117 @@ fn enter_key_splits_line() {
     harness.run_steps(2); // two frames: initial layout + repaint flush
     assert_eq!(harness.state().core().buffer().line_count(), 2);
 }
+
+// ── Cursor navigation ────────────────────────────────────────────────────────
+
+#[test]
+fn arrow_right_advances_cursor_col() {
+    let mut harness = make_harness("hello\n");
+    harness.event(plain_key(egui::Key::ArrowRight));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().snapshot().cursor_col, 1);
+}
+
+#[test]
+fn arrow_down_advances_cursor_row() {
+    let mut harness = make_harness("line1\nline2\n");
+    harness.event(plain_key(egui::Key::ArrowDown));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().snapshot().cursor_row, 1);
+}
+
+#[test]
+fn home_and_end_keys_move_to_line_boundaries() {
+    let mut harness = make_harness("hello\n");
+    harness.event(plain_key(egui::Key::End));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().snapshot().cursor_col, 5);
+    harness.event(plain_key(egui::Key::Home));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().snapshot().cursor_col, 0);
+}
+
+// ── Mouse interaction ────────────────────────────────────────────────────────
+
+#[test]
+fn click_at_row_0_positions_cursor_at_row_0() {
+    let mut harness = make_harness("hello\nworld\n");
+    let origin = editor_text_origin(&harness);
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().snapshot().cursor_row, 0);
+}
+
+#[test]
+fn click_at_second_row_y_positions_cursor_at_row_1() {
+    let mut harness = make_harness("hello\nworld\n");
+    let origin = editor_text_origin(&harness);
+    let row_height = 18.0_f32; // hardcoded in mouse_pos_to_row_col
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + row_height + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert_eq!(harness.state().core().snapshot().cursor_row, 1);
+}
+
+#[test]
+fn drag_across_chars_creates_selection() {
+    let mut harness = make_harness("hello world\n");
+    let origin = editor_text_origin(&harness);
+    let char_width = 8.0_f32;
+    // Press at col 0
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    // Move to col 5
+    harness.event(egui::Event::PointerMoved(egui::Pos2::new(
+        origin.x + char_width * 5.0,
+        origin.y + 0.5,
+    )));
+    // Release
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + char_width * 5.0, origin.y + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(harness.state().core().has_selection());
+}
+
+#[test]
+fn click_without_drag_clears_selection() {
+    let mut harness = make_harness("hello world\n");
+    // Establish a selection via Ctrl+A
+    harness.event(ctrl_key(egui::Key::A));
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(harness.state().core().has_selection());
+
+    // Click without dragging — sets selection_start == selection_end → not selected
+    let origin = editor_text_origin(&harness);
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    assert!(!harness.state().core().has_selection());
+}
