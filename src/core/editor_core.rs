@@ -383,27 +383,27 @@ impl EditorCore {
                 None
             }
             Command::MoveWordLeft => {
-                // TODO: Implement word movement
+                self.move_word_left(viewport);
                 None
             }
             Command::MoveWordRight => {
-                // TODO: Implement word movement
+                self.move_word_right(viewport);
                 None
             }
             Command::DeleteWordLeft => {
-                // TODO: Implement word deletion
+                self.delete_word_left(viewport);
                 None
             }
             Command::DeleteWordRight => {
-                // TODO: Implement word deletion
+                self.delete_word_right(viewport);
                 None
             }
             Command::ToggleSoftWrap => {
-                // TODO: Implement soft wrap toggle
+                // Implemented in Task 5
                 None
             }
             Command::ReflowParagraph => {
-                // TODO: Implement paragraph reflow
+                // Implemented in Task 7
                 None
             }
             Command::None => None,
@@ -1208,6 +1208,72 @@ impl EditorCore {
             self.should_quit = true;
         }
     }
+
+    fn move_word_right(&mut self, viewport: ViewportMetrics) {
+        let pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+        let new_pos = self.buffer.next_word_start(pos);
+        let (row, col) = self.buffer.offset_to_row_col(new_pos);
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.desired_col = col;
+        self.last_insert_at = None;
+        self.scroll_to_cursor(viewport);
+    }
+
+    fn move_word_left(&mut self, viewport: ViewportMetrics) {
+        let pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+        let new_pos = self.buffer.prev_word_start(pos);
+        let (row, col) = self.buffer.offset_to_row_col(new_pos);
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.desired_col = col;
+        self.last_insert_at = None;
+        self.scroll_to_cursor(viewport);
+    }
+
+    fn delete_word_left(&mut self, viewport: ViewportMetrics) {
+        let pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+        if pos == 0 {
+            return;
+        }
+        let new_pos = self.buffer.prev_word_start(pos);
+        let len = pos - new_pos;
+        let text: String = self.buffer.rope.slice(new_pos..pos).into();
+        let cursor_before = (self.cursor_row, self.cursor_col);
+        self.buffer.raw_delete(new_pos, len);
+        let (row, col) = self.buffer.offset_to_row_col(new_pos);
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.desired_col = col;
+        self.push_undo(
+            vec![EditOp::Delete { pos: new_pos, text }],
+            cursor_before,
+            (row, col),
+        );
+        self.last_insert_at = None;
+        self.redo_stack.clear();
+        self.scroll_to_cursor(viewport);
+    }
+
+    fn delete_word_right(&mut self, viewport: ViewportMetrics) {
+        let pos = self.buffer.char_offset_for(self.cursor_row, self.cursor_col);
+        let end_pos = self.buffer.next_word_start(pos);
+        if end_pos == pos {
+            return;
+        }
+        let delete_len = end_pos - pos;
+        let text: String = self.buffer.rope.slice(pos..end_pos).into();
+        let cursor_before = (self.cursor_row, self.cursor_col);
+        self.buffer.raw_delete(pos, delete_len);
+        self.push_undo(
+            vec![EditOp::Delete { pos, text }],
+            cursor_before,
+            (self.cursor_row, self.cursor_col),
+        );
+        self.last_insert_at = None;
+        self.redo_stack.clear();
+        self.scroll_to_cursor(viewport);
+    }
 }
 
 #[cfg(test)]
@@ -1561,5 +1627,76 @@ mod tests {
         // Should not panic with large values
         core.set_scroll_offset(100);
         assert_eq!(core.snapshot().scroll_offset, 100);
+    }
+}
+
+#[cfg(test)]
+mod word_movement_tests {
+    use super::*;
+    use crate::buffer::Buffer;
+    use crate::config::Config;
+
+    fn make_core(text: &str) -> EditorCore {
+        EditorCore::new(Buffer::from_content(text.to_string()), Config::default())
+    }
+
+    fn vp() -> ViewportMetrics { ViewportMetrics { rows: 24, cols: 80 } }
+
+    #[test]
+    fn move_word_right_from_start() {
+        let mut core = make_core("hello world");
+        core.apply_command(Command::MoveWordRight, vp()).unwrap();
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 6));
+    }
+
+    #[test]
+    fn move_word_right_from_last_word() {
+        let mut core = make_core("hello world");
+        core.cursor_col = 6;
+        core.apply_command(Command::MoveWordRight, vp()).unwrap();
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 11));
+    }
+
+    #[test]
+    fn move_word_left_from_end() {
+        let mut core = make_core("hello world");
+        core.cursor_col = 11;
+        core.apply_command(Command::MoveWordLeft, vp()).unwrap();
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 6));
+    }
+
+    #[test]
+    fn move_word_left_from_start_of_word() {
+        let mut core = make_core("hello world");
+        core.cursor_col = 6;
+        core.apply_command(Command::MoveWordLeft, vp()).unwrap();
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 0));
+    }
+
+    #[test]
+    fn delete_word_left_removes_previous_word() {
+        let mut core = make_core("hello world");
+        core.cursor_col = 11;
+        core.apply_command(Command::DeleteWordLeft, vp()).unwrap();
+        assert_eq!(core.buffer().line(0), "hello ");
+        assert_eq!(core.cursor_col, 6);
+    }
+
+    #[test]
+    fn delete_word_right_removes_next_word() {
+        let mut core = make_core("hello world");
+        // cursor at 0; next_word_start(0) = 6 (skips "hello" and trailing space, leaves "world")
+        core.apply_command(Command::DeleteWordRight, vp()).unwrap();
+        assert_eq!(core.buffer().line(0), "world");
+    }
+
+    #[test]
+    fn delete_word_left_is_undoable() {
+        let mut core = make_core("hello world");
+        core.cursor_col = 11;
+        core.apply_command(Command::DeleteWordLeft, vp()).unwrap();
+        core.apply_command(Command::Undo, vp()).unwrap();
+        assert_eq!(core.buffer().line(0), "hello world");
+        assert_eq!(core.cursor_col, 11);
     }
 }
