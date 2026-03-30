@@ -86,6 +86,13 @@ impl GuiApp {
             return self.handle_search_event(ctx, event);
         }
 
+        // Reflow paragraph: Option+Q (macOS) / Alt+Q (Win/Linux)
+        if let egui::Event::Key { key: egui::Key::Q, pressed: true, modifiers, .. } = &event {
+            if modifiers.alt {
+                return self.apply_command(ctx, Command::ReflowParagraph);
+            }
+        }
+
         match event {
             egui::Event::Key {
                 key,
@@ -108,10 +115,30 @@ impl GuiApp {
                 match key {
                     Key::Enter => self.apply_command(ctx, Command::InsertNewline),
                     Key::Tab => self.apply_command(ctx, Command::InsertTab),
+                    Key::Backspace if modifiers.alt || modifiers.ctrl => {
+                        self.apply_command(ctx, Command::DeleteWordLeft)
+                    }
                     Key::Backspace => self.apply_command(ctx, Command::Backspace),
+                    Key::Delete if modifiers.alt || modifiers.ctrl => {
+                        self.apply_command(ctx, Command::DeleteWordRight)
+                    }
                     Key::Delete => self.apply_command(ctx, Command::DeleteChar),
                     Key::ArrowUp => self.apply_command(ctx, Command::MoveUp),
                     Key::ArrowDown => self.apply_command(ctx, Command::MoveDown),
+                    Key::ArrowLeft if modifiers.alt => {
+                        self.apply_command(ctx, Command::MoveWordLeft)
+                    }
+                    Key::ArrowRight if modifiers.alt => {
+                        self.apply_command(ctx, Command::MoveWordRight)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    Key::ArrowLeft if modifiers.ctrl => {
+                        self.apply_command(ctx, Command::MoveWordLeft)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    Key::ArrowRight if modifiers.ctrl => {
+                        self.apply_command(ctx, Command::MoveWordRight)
+                    }
                     Key::ArrowLeft => self.apply_command(ctx, Command::MoveLeft),
                     Key::ArrowRight => self.apply_command(ctx, Command::MoveRight),
                     Key::Home => self.apply_command(ctx, Command::MoveLineStart),
@@ -543,6 +570,11 @@ impl GuiApp {
 
                     let line = self.core.buffer().line(file_row);
                     let line_start = self.core.buffer().char_offset_for(file_row, 0);
+                    let (render_col_offset, render_max_chars) = if snapshot.soft_wrap {
+                        (0, usize::MAX)
+                    } else {
+                        (snapshot.col_offset, text_cols)
+                    };
                     let (job, next_block_comment) = line_layout_job(
                         &line,
                         snapshot.file_ext.as_deref(),
@@ -552,9 +584,11 @@ impl GuiApp {
                         search_bg,
                         snapshot.search_match,
                         line_start,
-                        snapshot.col_offset,
-                        text_cols,
+                        render_col_offset,
+                        render_max_chars,
                         in_block_comment,
+                        snapshot.soft_wrap,
+                        rect.width() - PANEL_PADDING * 2.0 - gutter_px,
                     );
                     in_block_comment = next_block_comment;
 
@@ -697,6 +731,7 @@ fn map_shortcut(key: Key, modifiers: egui::Modifiers) -> Option<Command> {
         Key::Y => Some(Command::Redo),
         Key::F => Some(Command::Find),
         Key::L => Some(Command::ToggleLineNumbers),
+        Key::W if modifiers.shift => Some(Command::ToggleSoftWrap),
         Key::C => Some(Command::Copy),
         Key::V => Some(Command::Paste),
         Key::X => Some(Command::Cut),
@@ -894,10 +929,16 @@ fn line_layout_job(
     col_offset: usize,
     max_chars: usize,
     in_block_comment: bool,
+    soft_wrap: bool,
+    available_width: f32,
 ) -> (LayoutJob, bool) {
     let (spans, next_block_comment) = highlight::highlight_line(line, ext, in_block_comment, theme);
     let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
+    if soft_wrap {
+        job.wrap.max_width = available_width;
+    } else {
+        job.wrap.max_width = f32::INFINITY;
+    }
     job.break_on_newline = false;
 
     let mut run = String::new();
@@ -1048,6 +1089,8 @@ mod tests {
             2,
             3,
             false,
+            false,
+            f32::INFINITY,
         );
         assert_eq!(job.text, "cde");
     }
@@ -1066,6 +1109,8 @@ mod tests {
             0,
             80,
             false,
+            false,
+            f32::INFINITY,
         );
         assert!(next_block_comment);
     }
