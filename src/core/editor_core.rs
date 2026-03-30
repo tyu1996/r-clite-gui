@@ -2016,8 +2016,10 @@ mod reflow_tests {
     use crate::buffer::Buffer;
     use crate::config::Config;
 
+    #[allow(dead_code)]
     fn vp() -> ViewportMetrics { ViewportMetrics { rows: 24, cols: 80 } }
 
+    #[allow(dead_code)]
     fn make_core(text: &str, wrap_col: usize) -> EditorCore {
         let mut cfg = Config::default();
         cfg.wrap_column = wrap_col;
