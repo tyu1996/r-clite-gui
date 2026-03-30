@@ -319,6 +319,7 @@ impl Ui {
             let vrow = visual_map
                 .iter()
                 .position(|&(r, cs)| r == cursor_row && cs == cursor_col_start)
+                .or_else(|| visual_map.iter().rposition(|&(r, _)| r == cursor_row))
                 .unwrap_or(cursor_row);
             let vcol = cursor_col % wrap_width;
             (vrow.saturating_sub(scroll_offset), gutter + vcol)
