@@ -14,6 +14,10 @@ pub struct Config {
     pub line_numbers: bool,
     /// Colour theme: `"dark"` or `"light"`.
     pub theme: String,
+    /// Whether soft word wrap is enabled on startup.
+    pub word_wrap: bool,
+    /// Column width used by the ReflowParagraph command.
+    pub wrap_column: usize,
 }
 
 impl Default for Config {
@@ -22,6 +26,8 @@ impl Default for Config {
             tab_width: 4,
             line_numbers: true,
             theme: "dark".to_string(),
+            word_wrap: true,
+            wrap_column: 80,
         }
     }
 }
@@ -71,6 +77,15 @@ impl Config {
                 "theme" => match val {
                     "dark" | "light" => cfg.theme = val.to_string(),
                     _ => warnings.push(format!("config: unknown theme '{}', using 'dark'", val)),
+                },
+                "word_wrap" => match val {
+                    "true" => cfg.word_wrap = true,
+                    "false" => cfg.word_wrap = false,
+                    _ => warnings.push(format!("config: invalid word_wrap '{}'", val)),
+                },
+                "wrap_column" => match val.parse::<usize>() {
+                    Ok(n) if n > 0 => cfg.wrap_column = n,
+                    _ => warnings.push(format!("config: invalid wrap_column '{}'", val)),
                 },
                 _ => {} // Ignore unknown keys silently.
             }
