@@ -1251,6 +1251,9 @@ impl EditorCore {
             (row, col),
         );
         self.last_insert_at = None;
+        if !self.redo_stack.is_empty() {
+            self.save_depth = None;
+        }
         self.redo_stack.clear();
         self.scroll_to_cursor(viewport);
     }
@@ -1271,6 +1274,9 @@ impl EditorCore {
             (self.cursor_row, self.cursor_col),
         );
         self.last_insert_at = None;
+        if !self.redo_stack.is_empty() {
+            self.save_depth = None;
+        }
         self.redo_stack.clear();
         self.scroll_to_cursor(viewport);
     }
