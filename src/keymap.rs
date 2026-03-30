@@ -62,6 +62,18 @@ pub enum Command {
     Cut,
     /// Select all text in the document.
     SelectAll,
+    /// Move cursor left by one word.
+    MoveWordLeft,
+    /// Move cursor right by one word.
+    MoveWordRight,
+    /// Delete from cursor back to the start of the previous word.
+    DeleteWordLeft,
+    /// Delete from cursor forward to the start of the next word.
+    DeleteWordRight,
+    /// Toggle soft word wrap on/off.
+    ToggleSoftWrap,
+    /// Reflow the current paragraph to the configured wrap column.
+    ReflowParagraph,
     /// No-op — the key has no binding in the current context.
     None,
 }
@@ -71,8 +83,14 @@ pub enum Command {
 /// Unknown or unbound keys map to [`Command::None`].
 pub fn map(event: KeyEvent) -> Command {
     let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = event.modifiers.contains(KeyModifiers::ALT);
 
     match event.code {
+        // Word navigation (Ctrl+arrow on Win/Linux; terminals report Option as ALT on macOS)
+        // Must come before plain arrow keys so guards are checked first
+        KeyCode::Left if ctrl || alt => Command::MoveWordLeft,
+        KeyCode::Right if ctrl || alt => Command::MoveWordRight,
+
         // Arrow keys
         KeyCode::Up => Command::MoveUp,
         KeyCode::Down => Command::MoveDown,
@@ -93,13 +111,17 @@ pub fn map(event: KeyEvent) -> Command {
         KeyCode::PageUp => Command::PageUp,
         KeyCode::PageDown => Command::PageDown,
 
+        // Word delete (must come before plain Backspace/Delete keys)
+        KeyCode::Backspace if ctrl || alt => Command::DeleteWordLeft,
+        KeyCode::Delete if ctrl || alt => Command::DeleteWordRight,
+
         // Quit
         KeyCode::Char('q') if ctrl => Command::Quit,
 
+        // Reflow paragraph: Alt+Q (Option+Q on macOS — must come before Ctrl+Q)
+        KeyCode::Char('q') if alt => Command::ReflowParagraph,
+
         // Save / Save As
-        // Some terminals report Ctrl+Shift+S as Char('s') with CONTROL|SHIFT;
-        // others report it as Char('S') with CONTROL only (shift absorbed into
-        // the uppercase letter).  Handle both so Save As works everywhere.
         KeyCode::Char('s') if ctrl && event.modifiers.contains(KeyModifiers::SHIFT) => {
             Command::SaveAs
         }
@@ -116,6 +138,12 @@ pub fn map(event: KeyEvent) -> Command {
 
         // Toggle line numbers
         KeyCode::Char('l') if ctrl => Command::ToggleLineNumbers,
+
+        // Soft wrap toggle: Ctrl+Shift+W (or Option+W terminals may send ALT+W)
+        KeyCode::Char('w') if ctrl && event.modifiers.contains(KeyModifiers::SHIFT) => {
+            Command::ToggleSoftWrap
+        }
+        KeyCode::Char('W') if ctrl => Command::ToggleSoftWrap,
 
         // Editing
         KeyCode::Enter => Command::InsertNewline,

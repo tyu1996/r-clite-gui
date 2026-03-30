@@ -382,6 +382,30 @@ impl EditorCore {
                 self.handle_select_all();
                 None
             }
+            Command::MoveWordLeft => {
+                // TODO: Implement word movement
+                None
+            }
+            Command::MoveWordRight => {
+                // TODO: Implement word movement
+                None
+            }
+            Command::DeleteWordLeft => {
+                // TODO: Implement word deletion
+                None
+            }
+            Command::DeleteWordRight => {
+                // TODO: Implement word deletion
+                None
+            }
+            Command::ToggleSoftWrap => {
+                // TODO: Implement soft wrap toggle
+                None
+            }
+            Command::ReflowParagraph => {
+                // TODO: Implement paragraph reflow
+                None
+            }
             Command::None => None,
         };
 
