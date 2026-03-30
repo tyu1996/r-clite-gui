@@ -131,7 +131,7 @@ impl Buffer {
 
     /// Returns `true` if `c` is a word character (`[a-zA-Z0-9_]`).
     fn is_word_char(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
+        c.is_ascii_alphanumeric() || c == '_'
     }
 
     /// Returns the char offset of the start of the next word after `pos`.
