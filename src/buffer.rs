@@ -129,6 +129,50 @@ impl Buffer {
         }
     }
 
+    /// Returns `true` if `c` is a word character (`[a-zA-Z0-9_]`).
+    fn is_word_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// Returns the char offset of the start of the next word after `pos`.
+    ///
+    /// Skips any word chars at `pos` (end of current word), then skips non-word
+    /// chars, landing at the first char of the next word. Returns `len_chars()`
+    /// if there is no next word.
+    pub fn next_word_start(&self, pos: usize) -> usize {
+        let len = self.rope.len_chars();
+        let mut i = pos;
+        // Skip current word characters
+        while i < len && Self::is_word_char(self.rope.char(i)) {
+            i += 1;
+        }
+        // Skip non-word characters
+        while i < len && !Self::is_word_char(self.rope.char(i)) {
+            i += 1;
+        }
+        i
+    }
+
+    /// Returns the char offset of the start of the word to the left of `pos`.
+    ///
+    /// Steps back over non-word chars, then back over word chars, landing at
+    /// the first char of that word. Returns `0` if already at the start.
+    pub fn prev_word_start(&self, pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        let mut i = pos - 1;
+        // Step back over non-word chars
+        while i > 0 && !Self::is_word_char(self.rope.char(i)) {
+            i -= 1;
+        }
+        // Step back over word chars
+        while i > 0 && Self::is_word_char(self.rope.char(i - 1)) {
+            i -= 1;
+        }
+        i
+    }
+
     /// Insert `text` at the given rope char offset. Marks dirty.
     pub fn raw_insert(&mut self, pos: usize, text: &str) {
         self.rope.insert(pos, text);
@@ -561,5 +605,55 @@ mod tests {
         buf.save_to(tmp.clone()).unwrap();
         assert!(!buf.is_dirty());
         std::fs::remove_file(tmp).unwrap();
+    }
+
+    mod word_boundary_tests {
+        use super::*;
+
+        // "hello world foo" — positions:
+        // h=0,e=1,l=2,l=3,o=4, =5,w=6,o=7,r=8,l=9,d=10, =11,f=12,o=13,o=14 (len=15)
+        fn buf() -> Buffer {
+            Buffer::from_content("hello world foo".to_string())
+        }
+
+        #[test]
+        fn next_word_from_line_start() {
+            assert_eq!(buf().next_word_start(0), 6); // "hello" → "world"
+        }
+
+        #[test]
+        fn next_word_from_middle_of_word() {
+            assert_eq!(buf().next_word_start(2), 6); // inside "hello" → "world"
+        }
+
+        #[test]
+        fn next_word_from_word_boundary() {
+            assert_eq!(buf().next_word_start(6), 12); // "world" → "foo"
+        }
+
+        #[test]
+        fn next_word_at_end() {
+            assert_eq!(buf().next_word_start(15), 15); // at end → stays at end
+        }
+
+        #[test]
+        fn prev_word_from_end() {
+            assert_eq!(buf().prev_word_start(15), 12); // end → start of "foo"
+        }
+
+        #[test]
+        fn prev_word_from_start_of_word() {
+            assert_eq!(buf().prev_word_start(12), 6); // "foo" → "world"
+        }
+
+        #[test]
+        fn prev_word_from_middle_of_word() {
+            assert_eq!(buf().prev_word_start(8), 6); // inside "world" → start of "world"
+        }
+
+        #[test]
+        fn prev_word_at_zero() {
+            assert_eq!(buf().prev_word_start(0), 0);
+        }
     }
 }
