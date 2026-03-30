@@ -12,6 +12,32 @@ const STARTUP_HINT_DELAY: Duration = Duration::from_secs(5);
 const OPEN_CONFIRM_DURATION: Duration = Duration::from_secs(3);
 const QUIT_CONFIRM_DURATION: Duration = Duration::from_secs(3);
 
+/// Word-wrap `text` to `width` columns, inserting newlines at word boundaries.
+/// Returns the reflowed string. A `width` of 0 returns the text unchanged.
+fn word_wrap_to(text: &str, width: usize) -> String {
+    if width == 0 {
+        return text.to_string();
+    }
+    let mut result = String::new();
+    let mut line_len = 0usize;
+    for word in text.split_whitespace() {
+        let wlen = word.chars().count();
+        if result.is_empty() {
+            result.push_str(word);
+            line_len = wlen;
+        } else if line_len + 1 + wlen <= width {
+            result.push(' ');
+            result.push_str(word);
+            line_len += 1 + wlen;
+        } else {
+            result.push('\n');
+            result.push_str(word);
+            line_len = wlen;
+        }
+    }
+    result
+}
+
 #[derive(Debug, Clone)]
 enum EditOp {
     Insert { pos: usize, text: String },
@@ -414,7 +440,7 @@ impl EditorCore {
                 None
             }
             Command::ReflowParagraph => {
-                // Implemented in Task 7
+                self.reflow_paragraph(viewport);
                 None
             }
             Command::None => None,
@@ -824,6 +850,66 @@ impl EditorCore {
             cursor_before,
             (self.cursor_row, self.cursor_col),
         );
+        self.last_insert_at = None;
+        if !self.redo_stack.is_empty() {
+            self.save_depth = None;
+        }
+        self.redo_stack.clear();
+        self.scroll_to_cursor(viewport);
+    }
+
+    fn reflow_paragraph(&mut self, viewport: ViewportMetrics) {
+        // 1. Find paragraph start: scan upward to blank line or buffer start.
+        let mut start_row = self.cursor_row;
+        while start_row > 0 && !self.buffer.line(start_row - 1).trim().is_empty() {
+            start_row -= 1;
+        }
+
+        // 2. Find paragraph end: scan downward to blank line or buffer end.
+        let mut end_row = self.cursor_row;
+        let line_count = self.buffer.line_count();
+        while end_row + 1 < line_count
+            && !self.buffer.line(end_row + 1).trim().is_empty()
+        {
+            end_row += 1;
+        }
+
+        // 3. Join lines into one string (single space between lines).
+        let joined: String = (start_row..=end_row)
+            .map(|r| self.buffer.line(r))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // 4. Re-wrap to wrap_column.
+        let reflowed = word_wrap_to(&joined, self.wrap_column);
+
+        // 5. Compute char offsets of the paragraph in the buffer.
+        let start_pos = self.buffer.char_offset_for(start_row, 0);
+        let end_col = self.buffer.line_len(end_row);
+        let end_pos = self.buffer.char_offset_for(end_row, end_col);
+
+        // 6. Replace the paragraph as a single undo entry.
+        let old_text: String = self.buffer.rope.slice(start_pos..end_pos).into();
+        let cursor_before = (self.cursor_row, self.cursor_col);
+
+        self.buffer.raw_delete(start_pos, end_pos - start_pos);
+        self.buffer.raw_insert(start_pos, &reflowed);
+
+        let new_len = reflowed.chars().count();
+        let (new_row, new_col) = self.buffer.offset_to_row_col(start_pos + new_len);
+
+        self.push_undo(
+            vec![
+                EditOp::Delete { pos: start_pos, text: old_text },
+                EditOp::Insert { pos: start_pos, text: reflowed },
+            ],
+            cursor_before,
+            (new_row, new_col),
+        );
+
+        self.cursor_row = new_row;
+        self.cursor_col = new_col;
+        self.desired_col = new_col;
         self.last_insert_at = None;
         if !self.redo_stack.is_empty() {
             self.save_depth = None;
@@ -1922,5 +2008,54 @@ mod soft_wrap_tests {
         let mut core = make_core_wrap("hello");
         core.apply_command(Command::MoveUp, vp_narrow()).unwrap();
         assert_eq!((core.cursor_row, core.cursor_col), (0, 0));
+    }
+}
+
+mod reflow_tests {
+    use super::*;
+    use crate::buffer::Buffer;
+    use crate::config::Config;
+
+    fn vp() -> ViewportMetrics { ViewportMetrics { rows: 24, cols: 80 } }
+
+    fn make_core(text: &str, wrap_col: usize) -> EditorCore {
+        let mut cfg = Config::default();
+        cfg.wrap_column = wrap_col;
+        EditorCore::new(Buffer::from_content(text.to_string()), cfg)
+    }
+
+    #[test]
+    fn reflow_wraps_long_line() {
+        let long = "This is a long line that should be reflowed at forty chars";
+        let mut core = make_core(long, 40);
+        core.apply_command(Command::ReflowParagraph, vp()).unwrap();
+        let result = core.buffer().line(0);
+        assert!(result.chars().count() <= 40, "first line too long: {:?}", result);
+        // All original words still present
+        let full: String = (0..core.buffer().line_count())
+            .map(|r| core.buffer().line(r))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(full.contains("reflowed"));
+    }
+
+    #[test]
+    fn reflow_respects_blank_line_boundary() {
+        let text = "first paragraph\n\nsecond paragraph";
+        let mut core = make_core(text, 80);
+        // cursor is on first paragraph
+        core.apply_command(Command::ReflowParagraph, vp()).unwrap();
+        // second paragraph untouched
+        let last = core.buffer().line(core.buffer().line_count() - 1);
+        assert_eq!(last, "second paragraph");
+    }
+
+    #[test]
+    fn reflow_is_undoable() {
+        let long = "word1 word2 word3 word4 word5";
+        let mut core = make_core(long, 10);
+        core.apply_command(Command::ReflowParagraph, vp()).unwrap();
+        core.apply_command(Command::Undo, vp()).unwrap();
+        assert_eq!(core.buffer().line(0), long);
     }
 }
