@@ -995,7 +995,7 @@ impl EditorCore {
                     return;
                 } else if self.cursor_row > 0 {
                     // Move to last visual row of previous buffer row
-                    let visual_col = self.cursor_col % wrap_width;
+                    let visual_col = self.desired_col % wrap_width;
                     self.cursor_row -= 1;
                     let prev_len = self.buffer.line_len(self.cursor_row);
                     let last_vr_start = (prev_len / wrap_width) * wrap_width;
@@ -1041,7 +1041,7 @@ impl EditorCore {
                     return;
                 } else if self.cursor_row + 1 < self.buffer.line_count() {
                     // Move to first visual row of next buffer row
-                    let visual_col = self.cursor_col % wrap_width;
+                    let visual_col = self.desired_col % wrap_width;
                     self.cursor_row += 1;
                     let next_len = self.buffer.line_len(self.cursor_row);
                     self.cursor_col = visual_col.min(next_len);
@@ -1886,6 +1886,40 @@ mod soft_wrap_tests {
     fn move_up_within_wrapped_line() {
         let mut core = make_core_wrap("abcdefghijklmnopqrst");
         core.cursor_col = 13; // second visual row
+        core.apply_command(Command::MoveUp, vp_narrow()).unwrap();
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 0));
+    }
+
+    #[test]
+    fn move_down_crosses_buffer_row() {
+        // Two lines; cursor on first, already at last visual row → moves to row 1
+        let mut core = make_core_wrap("hello\nworld");
+        // "hello" is 5 chars, wrap_width=13: only 1 visual row
+        // so move_down goes to next buffer row
+        core.apply_command(Command::MoveDown, vp_narrow()).unwrap();
+        assert_eq!(core.cursor_row, 1);
+    }
+
+    #[test]
+    fn move_up_crosses_buffer_row() {
+        let mut core = make_core_wrap("hello\nworld");
+        core.cursor_row = 1;
+        core.cursor_col = 3;
+        core.apply_command(Command::MoveUp, vp_narrow()).unwrap();
+        assert_eq!(core.cursor_row, 0);
+    }
+
+    #[test]
+    fn move_down_at_last_row_does_nothing() {
+        let mut core = make_core_wrap("hello");
+        core.apply_command(Command::MoveDown, vp_narrow()).unwrap();
+        // Only one buffer row, no next row → stays put
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 0));
+    }
+
+    #[test]
+    fn move_up_at_first_row_does_nothing() {
+        let mut core = make_core_wrap("hello");
         core.apply_command(Command::MoveUp, vp_narrow()).unwrap();
         assert_eq!((core.cursor_row, core.cursor_col), (0, 0));
     }
