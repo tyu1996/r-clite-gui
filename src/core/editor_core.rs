@@ -54,6 +54,7 @@ pub struct ViewSnapshot {
     pub search: Option<SearchStateSnapshot>,
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
+    pub soft_wrap: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,8 @@ pub struct EditorCore {
     // Selection state for copy/cut operations
     selection_start: Option<(usize, usize)>,
     selection_end: Option<(usize, usize)>,
+    pub soft_wrap: bool,
+    wrap_column: usize,
 }
 
 impl EditorCore {
@@ -135,6 +138,8 @@ impl EditorCore {
             should_quit: false,
             selection_start: None,
             selection_end: None,
+            soft_wrap: config.word_wrap,
+            wrap_column: config.wrap_column,
         }
     }
 
@@ -190,6 +195,7 @@ impl EditorCore {
             }),
             selection_start: self.selection_start,
             selection_end: self.selection_end,
+            soft_wrap: self.soft_wrap,
         }
     }
 
@@ -399,7 +405,12 @@ impl EditorCore {
                 None
             }
             Command::ToggleSoftWrap => {
-                // Implemented in Task 5
+                self.soft_wrap = !self.soft_wrap;
+                // Reset horizontal scroll when disabling wrap
+                if !self.soft_wrap {
+                    self.col_offset = 0;
+                }
+                self.scroll_to_cursor(viewport);
                 None
             }
             Command::ReflowParagraph => {
@@ -943,7 +954,67 @@ impl EditorCore {
         self.scroll_to_cursor(viewport);
     }
 
+    /// How many visual rows buffer row `r` occupies when wrapped at `wrap_width`.
+    pub fn visual_rows_for(&self, buffer_row: usize, wrap_width: usize) -> usize {
+        if wrap_width == 0 {
+            return 1;
+        }
+        let line_len = self.buffer.line_len(buffer_row);
+        if line_len == 0 {
+            return 1;
+        }
+        (line_len + wrap_width - 1) / wrap_width
+    }
+
+    /// Visual row index of the cursor (summing visual rows for all preceding buffer rows).
+    fn cursor_visual_row(&self, wrap_width: usize) -> usize {
+        if wrap_width == 0 {
+            return self.cursor_row;
+        }
+        let rows_before: usize = (0..self.cursor_row)
+            .map(|r| self.visual_rows_for(r, wrap_width))
+            .sum();
+        rows_before + self.cursor_col / wrap_width
+    }
+
     fn move_up(&mut self, viewport: ViewportMetrics) {
+        if self.soft_wrap {
+            let wrap_width =
+                viewport.text_width(self.show_line_numbers, self.buffer.line_count());
+            if wrap_width > 0 {
+                let visual_row_in_line = self.cursor_col / wrap_width;
+                if visual_row_in_line > 0 {
+                    // Move up within the same buffer row
+                    let visual_col = self.cursor_col % wrap_width;
+                    let new_start = (visual_row_in_line - 1) * wrap_width;
+                    let line_len = self.buffer.line_len(self.cursor_row);
+                    self.cursor_col = (new_start + visual_col).min(line_len);
+                    self.desired_col = self.cursor_col;
+                    self.last_insert_at = None;
+                    self.scroll_to_cursor(viewport);
+                    return;
+                } else if self.cursor_row > 0 {
+                    // Move to last visual row of previous buffer row
+                    let visual_col = self.cursor_col % wrap_width;
+                    self.cursor_row -= 1;
+                    let prev_len = self.buffer.line_len(self.cursor_row);
+                    let last_vr_start = (prev_len / wrap_width) * wrap_width;
+                    // If prev_len is exactly divisible, last_vr_start == prev_len (empty
+                    // last visual row); step back one visual row.
+                    let last_vr_start = if last_vr_start == prev_len && prev_len > 0 {
+                        last_vr_start.saturating_sub(wrap_width)
+                    } else {
+                        last_vr_start
+                    };
+                    self.cursor_col = (last_vr_start + visual_col).min(prev_len);
+                    self.desired_col = self.cursor_col;
+                    self.last_insert_at = None;
+                    self.scroll_to_cursor(viewport);
+                    return;
+                }
+            }
+        }
+        // Original behaviour
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
             self.clamp_col_to_line();
@@ -953,6 +1024,35 @@ impl EditorCore {
     }
 
     fn move_down(&mut self, viewport: ViewportMetrics) {
+        if self.soft_wrap {
+            let wrap_width =
+                viewport.text_width(self.show_line_numbers, self.buffer.line_count());
+            if wrap_width > 0 {
+                let line_len = self.buffer.line_len(self.cursor_row);
+                let visual_row_in_line = self.cursor_col / wrap_width;
+                let next_vr_start = (visual_row_in_line + 1) * wrap_width;
+                if next_vr_start < line_len {
+                    // Another visual row exists in the same buffer row
+                    let visual_col = self.cursor_col % wrap_width;
+                    self.cursor_col = (next_vr_start + visual_col).min(line_len);
+                    self.desired_col = self.cursor_col;
+                    self.last_insert_at = None;
+                    self.scroll_to_cursor(viewport);
+                    return;
+                } else if self.cursor_row + 1 < self.buffer.line_count() {
+                    // Move to first visual row of next buffer row
+                    let visual_col = self.cursor_col % wrap_width;
+                    self.cursor_row += 1;
+                    let next_len = self.buffer.line_len(self.cursor_row);
+                    self.cursor_col = visual_col.min(next_len);
+                    self.desired_col = self.cursor_col;
+                    self.last_insert_at = None;
+                    self.scroll_to_cursor(viewport);
+                    return;
+                }
+            }
+        }
+        // Original behaviour
         if self.cursor_row + 1 < self.buffer.line_count() {
             self.cursor_row += 1;
             self.clamp_col_to_line();
@@ -1021,13 +1121,33 @@ impl EditorCore {
     }
 
     fn scroll_to_cursor(&mut self, viewport: ViewportMetrics) {
+        if self.soft_wrap {
+            let wrap_width =
+                viewport.text_width(self.show_line_numbers, self.buffer.line_count());
+            if wrap_width > 0 {
+                let visual_row = self.cursor_visual_row(wrap_width);
+                if visual_row < self.scroll_offset {
+                    self.scroll_offset = visual_row;
+                } else if viewport.rows > 0
+                    && visual_row >= self.scroll_offset + viewport.rows
+                {
+                    self.scroll_offset = visual_row - viewport.rows + 1;
+                }
+                // No horizontal scrolling when soft wrap is on
+                self.col_offset = 0;
+                return;
+            }
+        }
+        // Original behaviour (soft wrap off)
         if self.cursor_row < self.scroll_offset {
             self.scroll_offset = self.cursor_row;
-        } else if viewport.rows > 0 && self.cursor_row >= self.scroll_offset + viewport.rows {
+        } else if viewport.rows > 0
+            && self.cursor_row >= self.scroll_offset + viewport.rows
+        {
             self.scroll_offset = self.cursor_row - viewport.rows + 1;
         }
-
-        let text_width = viewport.text_width(self.show_line_numbers, self.buffer.line_count());
+        let text_width =
+            viewport.text_width(self.show_line_numbers, self.buffer.line_count());
         if self.cursor_col < self.col_offset {
             self.col_offset = self.cursor_col;
         } else if text_width > 0 && self.cursor_col >= self.col_offset + text_width {
@@ -1412,7 +1532,10 @@ mod tests {
 
     #[test]
     fn horizontal_scroll_tracks_cursor() {
-        let mut core = EditorCore::new(Buffer::new_empty(), config());
+        // Soft wrap must be off so horizontal scrolling kicks in.
+        let mut cfg = config();
+        cfg.word_wrap = false;
+        let mut core = EditorCore::new(Buffer::new_empty(), cfg);
         for ch in "abcdefghijk".chars() {
             core.apply_command(Command::InsertChar(ch), viewport())
                 .unwrap();
@@ -1704,5 +1827,66 @@ mod word_movement_tests {
         core.apply_command(Command::Undo, vp()).unwrap();
         assert_eq!(core.buffer().line(0), "hello world");
         assert_eq!(core.cursor_col, 11);
+    }
+}
+
+#[cfg(test)]
+mod soft_wrap_tests {
+    use super::*;
+    use crate::buffer::Buffer;
+    use crate::config::Config;
+
+    fn make_core_wrap(text: &str) -> EditorCore {
+        let mut cfg = Config::default();
+        cfg.word_wrap = true;
+        cfg.wrap_column = 80;
+        EditorCore::new(Buffer::from_content(text.to_string()), cfg)
+    }
+
+    fn vp_narrow() -> ViewportMetrics { ViewportMetrics { rows: 24, cols: 15 } }
+    // text_width for cols=15, show_line_numbers=true (gutter=1+1=2) = 13
+
+    #[test]
+    fn soft_wrap_on_by_default() {
+        let core = make_core_wrap("hello");
+        assert!(core.soft_wrap);
+    }
+
+    #[test]
+    fn toggle_disables_soft_wrap() {
+        let mut core = make_core_wrap("hello");
+        core.apply_command(Command::ToggleSoftWrap, vp_narrow()).unwrap();
+        assert!(!core.soft_wrap);
+    }
+
+    #[test]
+    fn visual_rows_for_short_line() {
+        let core = make_core_wrap("hello");
+        // line_len=5, wrap_width=13 → 1 visual row
+        assert_eq!(core.visual_rows_for(0, 13), 1);
+    }
+
+    #[test]
+    fn visual_rows_for_wrapped_line() {
+        // 20-char line, wrap_width=13 → ceil(20/13) = 2
+        let core = make_core_wrap("abcdefghijklmnopqrst");
+        assert_eq!(core.visual_rows_for(0, 13), 2);
+    }
+
+    #[test]
+    fn move_down_within_wrapped_line() {
+        // 20-char line, wrap_width=13; cursor starts at col 0
+        let mut core = make_core_wrap("abcdefghijklmnopqrst");
+        core.apply_command(Command::MoveDown, vp_narrow()).unwrap();
+        // Should move to col 13 (next visual row within same buffer row)
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 13));
+    }
+
+    #[test]
+    fn move_up_within_wrapped_line() {
+        let mut core = make_core_wrap("abcdefghijklmnopqrst");
+        core.cursor_col = 13; // second visual row
+        core.apply_command(Command::MoveUp, vp_narrow()).unwrap();
+        assert_eq!((core.cursor_row, core.cursor_col), (0, 0));
     }
 }
