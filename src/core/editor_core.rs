@@ -1225,6 +1225,8 @@ mod tests {
             tab_width: 4,
             line_numbers: true,
             theme: "dark".to_string(),
+            word_wrap: true,
+            wrap_column: 80,
         }
     }
 
