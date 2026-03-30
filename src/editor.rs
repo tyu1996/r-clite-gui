@@ -125,6 +125,7 @@ impl Editor {
                     cursor_col: snapshot.cursor_col,
                     scroll_offset: snapshot.scroll_offset,
                     col_offset: snapshot.col_offset,
+                    soft_wrap: snapshot.soft_wrap,
                     message: snapshot.message.as_deref(),
                     search_match: snapshot.search_match,
                     file_ext: snapshot.file_ext.as_deref(),

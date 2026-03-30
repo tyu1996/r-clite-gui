@@ -21,6 +21,7 @@ pub struct RenderState<'a> {
     pub cursor_col: usize,
     pub scroll_offset: usize,
     pub col_offset: usize,
+    pub soft_wrap: bool,
     pub message: Option<&'a str>,
     /// (char_offset, match_len) of the current search match, if any.
     pub search_match: Option<(usize, usize)>,
@@ -105,6 +106,7 @@ impl Ui {
             cursor_col,
             scroll_offset,
             col_offset,
+            soft_wrap,
             message,
             search_match,
             file_ext,
@@ -123,18 +125,53 @@ impl Ui {
         // Track block-comment state across lines for syntax highlighting.
         let mut in_block_comment = false;
 
-        for screen_row in 0..rows {
-            let file_row = screen_row + scroll_offset;
+        // Build visual-row → (buffer_row, col_start) map when soft wrap is on.
+        // When soft wrap is off this is a 1-1 map: visual_row == buffer_row, col_start == 0.
+        let wrap_width = if soft_wrap { text_width } else { 0 };
+        let visual_map: Vec<(usize, usize)> = if wrap_width > 0 {
+            let mut map = Vec::new();
+            for row in 0..line_count {
+                let line_len = buffer.line_len(row);
+                let num_vr = if line_len == 0 {
+                    1
+                } else {
+                    (line_len + wrap_width - 1) / wrap_width
+                };
+                for vr in 0..num_vr {
+                    map.push((row, vr * wrap_width));
+                }
+            }
+            map
+        } else {
+            (0..line_count).map(|r| (r, 0)).collect()
+        };
 
+        for screen_row in 0..rows {
+            let visual_row = screen_row + scroll_offset;
             stdout.queue(Clear(ClearType::CurrentLine))?;
 
-            if file_row < line_count {
-                // Render the line-number gutter.
+            let resolved = if wrap_width > 0 {
+                visual_map.get(visual_row).copied()
+            } else {
+                let file_row = visual_row;
+                if file_row < line_count {
+                    Some((file_row, col_offset))
+                } else {
+                    None
+                }
+            };
+
+            if let Some((file_row, col_start)) = resolved {
+                // Gutter: show line number on first visual row of a buffer row, blank on continuations.
                 if gutter > 0 {
-                    let num = format!("{:>width$} ", file_row + 1, width = gutter - 1);
-                    stdout.queue(SetForegroundColor(Color::DarkGrey))?;
-                    stdout.queue(Print(&num))?;
-                    stdout.queue(ResetColor)?;
+                    if col_start == 0 {
+                        let num = format!("{:>width$} ", file_row + 1, width = gutter - 1);
+                        stdout.queue(SetForegroundColor(Color::DarkGrey))?;
+                        stdout.queue(Print(&num))?;
+                        stdout.queue(ResetColor)?;
+                    } else {
+                        stdout.queue(Print(" ".repeat(gutter)))?;
+                    }
                 }
 
                 let line = buffer.line(file_row);
@@ -146,7 +183,7 @@ impl Ui {
                 // We need to know the char offset of each displayed char.
                 let line_char_start = buffer.char_offset_for(file_row, 0);
 
-                // Collect all chars with their absolute offset, then slice by col_offset.
+                // Collect all chars with their absolute offset, then slice by col_start.
                 let mut char_pos = 0usize; // position within the line (0-indexed)
                 let mut printed = 0usize;
 
@@ -167,11 +204,11 @@ impl Ui {
 
                 for span in &spans {
                     for ch in span.text.chars() {
-                        if char_pos < col_offset {
+                        if char_pos < col_start {
                             char_pos += 1;
                             continue;
                         }
-                        if printed >= text_width {
+                        if char_pos >= col_start + text_width || printed >= text_width {
                             break;
                         }
 
@@ -218,17 +255,15 @@ impl Ui {
                     }
                 }
             } else {
-                // Lines beyond the file content show a tilde, vim-style.
+                // Beyond-EOF tilde row
                 if gutter > 0 {
-                    // Blank gutter for tilde lines.
-                    write!(stdout, "{:width$}", "", width = gutter)?;
+                    stdout.queue(Print(" ".repeat(gutter)))?;
                 }
-                stdout.queue(SetForegroundColor(Color::DarkBlue))?;
-                write!(stdout, "~")?;
+                stdout.queue(SetForegroundColor(Color::DarkCyan))?;
+                stdout.queue(Print("~"))?;
                 stdout.queue(ResetColor)?;
             }
-
-            write!(stdout, "\r\n")?;
+            stdout.queue(Print("\r\n"))?;
         }
 
         // Second pass: render peer username labels next to their cursor blocks.
@@ -278,9 +313,25 @@ impl Ui {
         self.render_message_bar(&mut stdout, message)?;
 
         // Place the visible cursor at the editor cursor position.
-        let screen_row = cursor_row.saturating_sub(scroll_offset);
-        let screen_col = gutter + cursor_col.saturating_sub(col_offset);
-        stdout.queue(cursor::MoveTo(screen_col as u16, screen_row as u16))?;
+        let (cursor_screen_row, cursor_screen_col) = if wrap_width > 0 {
+            // Find the visual row of the cursor in the visual_map
+            let cursor_col_start = (cursor_col / wrap_width) * wrap_width;
+            let vrow = visual_map
+                .iter()
+                .position(|&(r, cs)| r == cursor_row && cs == cursor_col_start)
+                .unwrap_or(cursor_row);
+            let vcol = cursor_col % wrap_width;
+            (vrow.saturating_sub(scroll_offset), gutter + vcol)
+        } else {
+            (
+                cursor_row.saturating_sub(scroll_offset),
+                gutter + cursor_col.saturating_sub(col_offset),
+            )
+        };
+        stdout.queue(cursor::MoveTo(
+            cursor_screen_col as u16,
+            cursor_screen_row as u16,
+        ))?;
         stdout.queue(cursor::Show)?;
 
         stdout.flush()?;
