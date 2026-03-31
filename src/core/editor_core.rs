@@ -470,11 +470,15 @@ impl EditorCore {
                 None
             }
             Command::ReplaceOne => {
-                self.apply_replace_one(viewport);
+                if self.is_search_active() {
+                    self.apply_replace_one(viewport);
+                }
                 None
             }
             Command::ReplaceAll => {
-                self.apply_replace_all(viewport);
+                if self.is_search_active() {
+                    self.apply_replace_all(viewport);
+                }
                 None
             }
             Command::None => None,
@@ -678,8 +682,13 @@ impl EditorCore {
 
     pub fn transition_to_replacing(&mut self) {
         if let Some(search) = self.search.as_mut() {
-            search.mode = SearchMode::Replacing;
-            self.set_message("Replace? Enter=one, A=all, Esc=cancel".to_string());
+            if search.current_match.is_some() {
+                search.mode = SearchMode::Replacing;
+                self.set_message("Replace? Enter=one, A=all, Esc=cancel".to_string());
+            } else {
+                // No match to replace, cancel search
+                self.cancel_search();
+            }
         }
     }
 
