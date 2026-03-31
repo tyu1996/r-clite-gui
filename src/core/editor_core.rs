@@ -457,6 +457,26 @@ impl EditorCore {
                 self.reflow_paragraph(viewport);
                 None
             }
+            Command::Replace => {
+                if self.is_search_active() {
+                    self.enter_replace_mode();
+                }
+                None
+            }
+            Command::ToggleCaseSensitive => {
+                if self.is_search_active() {
+                    self.toggle_case_sensitive(viewport);
+                }
+                None
+            }
+            Command::ReplaceOne => {
+                self.apply_replace_one(viewport);
+                None
+            }
+            Command::ReplaceAll => {
+                self.apply_replace_all(viewport);
+                None
+            }
             Command::None => None,
         };
 

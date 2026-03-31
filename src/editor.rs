@@ -5,11 +5,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 
 use crate::buffer::Buffer;
 use crate::config::Config;
-use crate::core::{EditorCore, FrontendRequest, ViewportMetrics};
+use crate::core::{EditorCore, FrontendRequest, SearchMode, ViewportMetrics};
 use crate::keymap::{self, Command};
 use crate::terminal::RawModeGuard;
 use crate::ui::{RenderState, Ui};
@@ -264,12 +264,41 @@ impl Editor {
 
     fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         let viewport = self.viewport_metrics();
-        match key.code {
-            KeyCode::Esc => self.core.cancel_search(),
-            KeyCode::Enter | KeyCode::Char('n') => self.core.search_next(viewport),
-            KeyCode::Char('N') => self.core.search_prev(viewport),
-            KeyCode::Backspace => self.core.pop_search_char(viewport),
-            KeyCode::Char(ch) => self.core.append_search_char(ch, viewport),
+        let mode = self.core.search_mode();
+        match (mode, key.code) {
+            // Searching mode
+            (Some(SearchMode::Searching), KeyCode::Esc) => self.core.cancel_search(),
+            (Some(SearchMode::Searching), KeyCode::Enter) | (Some(SearchMode::Searching), KeyCode::Char('n')) => {
+                self.core.search_next(viewport)
+            }
+            (Some(SearchMode::Searching), KeyCode::Char('N')) => self.core.search_prev(viewport),
+            (Some(SearchMode::Searching), KeyCode::Backspace) => self.core.pop_search_char(viewport),
+            (Some(SearchMode::Searching), KeyCode::Char('c')) if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.core.toggle_case_sensitive(viewport)
+            }
+            (Some(SearchMode::Searching), KeyCode::Char('r')) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.core.enter_replace_mode()
+            }
+            (Some(SearchMode::Searching), KeyCode::Char(ch)) => self.core.append_search_char(ch, viewport),
+
+            // ReplacePrompt mode — typing builds replacement string
+            (Some(SearchMode::ReplacePrompt), KeyCode::Esc) => self.core.cancel_search(),
+            (Some(SearchMode::ReplacePrompt), KeyCode::Enter) => {
+                self.core.transition_to_replacing();
+            }
+            (Some(SearchMode::ReplacePrompt), KeyCode::Backspace) => {
+                if let Some(s) = self.core.search_replacement_mut() {
+                    s.pop();
+                }
+            }
+            (Some(SearchMode::ReplacePrompt), KeyCode::Char(ch)) => self.core.append_replacement_char(ch),
+
+            // Replacing mode
+            (Some(SearchMode::Replacing), KeyCode::Esc) => self.core.cancel_search(),
+            (Some(SearchMode::Replacing), KeyCode::Enter) => self.core.apply_replace_one(viewport),
+            (Some(SearchMode::Replacing), KeyCode::Char('a')) => self.core.apply_replace_all(viewport),
+
+            (None, _) => {} // No active search, ignore
             _ => {}
         }
         Ok(())
