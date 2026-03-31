@@ -128,6 +128,9 @@ impl Editor {
                     soft_wrap: snapshot.soft_wrap,
                     message: snapshot.message.as_deref(),
                     search_match: snapshot.search_match,
+                    search_mode: self.core.search_mode(),
+                    case_sensitive: self.core.snapshot().search.as_ref().map(|s| s.case_sensitive).unwrap_or(false),
+                    search_replacement: self.core.search_replacement().as_deref(),
                     file_ext: snapshot.file_ext.as_deref(),
                     #[cfg(feature = "collab")]
                     collab_status: collab_status.as_deref(),

@@ -13,6 +13,7 @@ use crossterm::{
 };
 
 use crate::buffer::Buffer;
+use crate::core::SearchMode;
 use crate::highlight;
 
 /// All per-frame state needed to render the editor.
@@ -25,6 +26,9 @@ pub struct RenderState<'a> {
     pub message: Option<&'a str>,
     /// (char_offset, match_len) of the current search match, if any.
     pub search_match: Option<(usize, usize)>,
+    pub search_mode: Option<SearchMode>,
+    pub case_sensitive: bool,
+    pub search_replacement: Option<&'a str>,
     pub file_ext: Option<&'a str>,
     /// Collab status string for the status bar (e.g. "[Host:1234]").
     #[cfg(feature = "collab")]
@@ -109,6 +113,9 @@ impl Ui {
             soft_wrap,
             message,
             search_match,
+            search_mode,
+            case_sensitive,
+            search_replacement,
             file_ext,
             ..
         } = *state;
@@ -310,7 +317,7 @@ impl Ui {
             #[cfg(feature = "collab")]
             collab_status,
         )?;
-        self.render_message_bar(&mut stdout, message)?;
+        self.render_message_bar(&mut stdout, message, search_mode, case_sensitive, search_replacement)?;
 
         // Place the visible cursor at the editor cursor position.
         let (cursor_screen_row, cursor_screen_col) = if wrap_width > 0 {
@@ -384,12 +391,45 @@ impl Ui {
     }
 
     /// Draw the message bar on the current terminal row.
-    fn render_message_bar(&self, stdout: &mut impl Write, message: Option<&str>) -> Result<()> {
+    fn render_message_bar(
+        &self,
+        stdout: &mut impl Write,
+        message: Option<&str>,
+        search_mode: Option<SearchMode>,
+        case_sensitive: bool,
+        search_replacement: Option<&str>,
+    ) -> Result<()> {
         stdout.queue(Clear(ClearType::CurrentLine))?;
-        if let Some(msg) = message {
-            let truncated: String = msg.chars().take(self.width).collect();
-            write!(stdout, "{}", truncated)?;
-        }
+
+        // Build the message text, appending "Match case: ON" if case sensitive
+        let base_msg = message.unwrap_or("");
+        let case_part = if case_sensitive && search_mode.is_some() {
+            " (Match case: ON)"
+        } else {
+            ""
+        };
+        let full_msg = if case_part.is_empty() {
+            base_msg.to_string()
+        } else {
+            format!("{}{}", base_msg, case_part)
+        };
+
+        // Determine what to display based on search_mode
+        let display_text = match search_mode {
+            Some(SearchMode::ReplacePrompt) => {
+                let replacement = search_replacement.unwrap_or("");
+                format!("Replace with: {}_", replacement)
+            }
+            Some(SearchMode::Replacing) => {
+                "Replace? Enter=one, A=all, Esc=cancel".to_string()
+            }
+            _ => {
+                full_msg
+            }
+        };
+
+        let truncated: String = display_text.chars().take(self.width).collect();
+        write!(stdout, "{}", truncated)?;
         Ok(())
     }
 }
