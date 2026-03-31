@@ -195,25 +195,36 @@ impl Buffer {
         (row, pos - line_start)
     }
 
-    /// Search for `query` (case-insensitive) starting at char offset `from`.
+    /// Search for `query` starting at char offset `from`.
+    ///
+    /// When `case_sensitive` is true, performs an exact match.
+    /// When `case_sensitive` is false, performs a case-insensitive match.
     ///
     /// Returns the char offset of the start of the next match, wrapping around
     /// the end of the document.  Returns `None` if there are no matches.
-    pub fn find_next(&self, query: &str, from: usize) -> Option<usize> {
+    pub fn find_next(&self, query: &str, from: usize, case_sensitive: bool) -> Option<usize> {
         if query.is_empty() {
             return None;
         }
         let text: String = self.rope.chars().collect();
-        let low_text = text.to_lowercase();
-        let low_query = query.to_lowercase();
-        let query_len = low_query.chars().count();
-        let doc_len = low_text.chars().count();
+        let (chars, qchars, query_len, doc_len) = if case_sensitive {
+            let chars: Vec<char> = text.chars().collect();
+            let qchars: Vec<char> = query.chars().collect();
+            let query_len = qchars.len();
+            let doc_len = chars.len();
+            (chars, qchars, query_len, doc_len)
+        } else {
+            let low_text = text.to_lowercase();
+            let low_query = query.to_lowercase();
+            let chars: Vec<char> = low_text.chars().collect();
+            let qchars: Vec<char> = low_query.chars().collect();
+            let query_len = qchars.len();
+            let doc_len = chars.len();
+            (chars, qchars, query_len, doc_len)
+        };
         if query_len > doc_len {
             return None;
         }
-        // Build a char-indexed view to search efficiently.
-        let chars: Vec<char> = low_text.chars().collect();
-        let qchars: Vec<char> = low_query.chars().collect();
         // Search forward from `from` (wrapping).
         for offset in 0..doc_len {
             let pos = (from + offset) % doc_len;
@@ -228,20 +239,32 @@ impl Buffer {
     }
 
     /// Search backward for `query` starting just before char offset `from`.
-    pub fn find_prev(&self, query: &str, from: usize) -> Option<usize> {
+    ///
+    /// When `case_sensitive` is true, performs an exact match.
+    /// When `case_sensitive` is false, performs a case-insensitive match.
+    pub fn find_prev(&self, query: &str, from: usize, case_sensitive: bool) -> Option<usize> {
         if query.is_empty() {
             return None;
         }
         let text: String = self.rope.chars().collect();
-        let low_text = text.to_lowercase();
-        let low_query = query.to_lowercase();
-        let query_len = low_query.chars().count();
-        let doc_len = low_text.chars().count();
+        let (chars, qchars, query_len, doc_len) = if case_sensitive {
+            let chars: Vec<char> = text.chars().collect();
+            let qchars: Vec<char> = query.chars().collect();
+            let query_len = qchars.len();
+            let doc_len = chars.len();
+            (chars, qchars, query_len, doc_len)
+        } else {
+            let low_text = text.to_lowercase();
+            let low_query = query.to_lowercase();
+            let chars: Vec<char> = low_text.chars().collect();
+            let qchars: Vec<char> = low_query.chars().collect();
+            let query_len = qchars.len();
+            let doc_len = chars.len();
+            (chars, qchars, query_len, doc_len)
+        };
         if query_len > doc_len {
             return None;
         }
-        let chars: Vec<char> = low_text.chars().collect();
-        let qchars: Vec<char> = low_query.chars().collect();
         // Search backward from `from - 1` (wrapping).
         for offset in 1..=doc_len {
             let pos = (from + doc_len - offset) % doc_len;
