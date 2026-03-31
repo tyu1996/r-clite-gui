@@ -51,18 +51,29 @@ struct UndoEntry {
     cursor_after: (usize, usize),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    Searching,
+    ReplacePrompt,
+    Replacing,
+}
+
 struct SearchState {
     query: String,
     current_match: Option<usize>,
     saved_cursor: (usize, usize),
     saved_scroll: usize,
     saved_col_offset: usize,
+    case_sensitive: bool,
+    replacement: String,
+    mode: SearchMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchStateSnapshot {
     pub query: String,
     pub current_match: Option<usize>,
+    pub case_sensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +92,7 @@ pub struct ViewSnapshot {
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
     pub soft_wrap: bool,
+    pub case_sensitive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,10 +230,12 @@ impl EditorCore {
             search: self.search.as_ref().map(|state| SearchStateSnapshot {
                 query: state.query.clone(),
                 current_match: state.current_match,
+                case_sensitive: state.case_sensitive,
             }),
             selection_start: self.selection_start,
             selection_end: self.selection_end,
             soft_wrap: self.soft_wrap,
+            case_sensitive: self.search.as_ref().map(|s| s.case_sensitive).unwrap_or(false),
         }
     }
 
@@ -483,12 +497,27 @@ impl EditorCore {
             saved_cursor: (self.cursor_row, self.cursor_col),
             saved_scroll: self.scroll_offset,
             saved_col_offset: self.col_offset,
+            case_sensitive: false,
+            replacement: String::new(),
+            mode: SearchMode::Searching,
         });
         self.set_message("Search: ".to_string());
     }
 
     pub fn is_search_active(&self) -> bool {
         self.search.is_some()
+    }
+
+    pub fn search_mode(&self) -> Option<SearchMode> {
+        self.search.as_ref().map(|s| s.mode)
+    }
+
+    pub fn search_replacement(&self) -> Option<String> {
+        self.search.as_ref().map(|s| s.replacement.clone())
+    }
+
+    pub fn search_replacement_mut(&mut self) -> Option<&mut String> {
+        self.search.as_mut().map(|s| &mut s.replacement)
     }
 
     pub fn set_search_query(&mut self, query: String, viewport: ViewportMetrics) {
@@ -523,15 +552,16 @@ impl EditorCore {
     }
 
     pub fn search_next(&mut self, viewport: ViewportMetrics) {
-        let (query, from) = match &self.search {
+        let (query, case_sensitive, from) = match &self.search {
             Some(search) => (
                 search.query.clone(),
+                search.case_sensitive,
                 search.current_match.map(|offset| offset + 1).unwrap_or(0),
             ),
             None => return,
         };
 
-        if let Some(pos) = self.buffer.find_next(&query, from) {
+        if let Some(pos) = self.buffer.find_next(&query, from, case_sensitive) {
             self.jump_to_match(pos, viewport);
         } else {
             self.set_message(format!("Search: {} (no more matches)", query));
@@ -539,12 +569,12 @@ impl EditorCore {
     }
 
     pub fn search_prev(&mut self, viewport: ViewportMetrics) {
-        let (query, from) = match &self.search {
-            Some(search) => (search.query.clone(), search.current_match.unwrap_or(0)),
+        let (query, case_sensitive, from) = match &self.search {
+            Some(search) => (search.query.clone(), search.case_sensitive, search.current_match.unwrap_or(0)),
             None => return,
         };
 
-        if let Some(pos) = self.buffer.find_prev(&query, from) {
+        if let Some(pos) = self.buffer.find_prev(&query, from, case_sensitive) {
             self.jump_to_match(pos, viewport);
         } else {
             self.set_message(format!("Search: {} (no more matches)", query));
@@ -560,6 +590,80 @@ impl EditorCore {
             self.col_offset = search.saved_col_offset;
         }
         self.set_message("Search cancelled.".to_string());
+    }
+
+    pub fn apply_replace_one(&mut self, viewport: ViewportMetrics) {
+        let (query, _case_sensitive, replacement) = match &self.search {
+            Some(s) => (s.query.clone(), s.case_sensitive, s.replacement.clone()),
+            None => return,
+        };
+        let match_pos = match &self.search.as_ref().unwrap().current_match {
+            Some(pos) => *pos,
+            None => return,
+        };
+        let match_len = query.chars().count();
+        self.buffer.raw_delete(match_pos, match_len);
+        self.buffer.raw_insert(match_pos, &replacement);
+        self.push_undo(Vec::new(), (self.cursor_row, self.cursor_col), (self.cursor_row, self.cursor_col));
+        self.search_next(viewport);
+    }
+
+    pub fn apply_replace_all(&mut self, _viewport: ViewportMetrics) {
+        let (query, case_sensitive, replacement) = match &self.search {
+            Some(s) => (s.query.clone(), s.case_sensitive, s.replacement.clone()),
+            None => return,
+        };
+        let mut positions: Vec<usize> = Vec::new();
+        let mut from = 0;
+        while let Some(pos) = self.buffer.find_next(&query, from, case_sensitive) {
+            positions.push(pos);
+            from = pos + 1;
+        }
+        if positions.is_empty() {
+            self.set_message(format!("No matches for: {}", query));
+            return;
+        }
+        for pos in positions.into_iter().rev() {
+            let match_len = query.chars().count();
+            self.buffer.raw_delete(pos, match_len);
+            self.buffer.raw_insert(pos, &replacement);
+        }
+        self.push_undo(Vec::new(), (self.cursor_row, self.cursor_col), (self.cursor_row, self.cursor_col));
+        self.set_message(format!("Replaced all matches."));
+        self.cancel_search();
+    }
+
+    pub fn enter_replace_mode(&mut self) {
+        if let Some(search) = self.search.as_mut() {
+            search.mode = SearchMode::ReplacePrompt;
+            self.set_message("Replace with: ".to_string());
+        }
+    }
+
+    pub fn append_replacement_char(&mut self, ch: char) {
+        if let Some(search) = self.search.as_mut() {
+            search.replacement.push(ch);
+        }
+    }
+
+    pub fn toggle_case_sensitive(&mut self, viewport: ViewportMetrics) {
+        let (case_sensitive, query) = match &self.search {
+            Some(search) => (search.case_sensitive, search.query.clone()),
+            None => return,
+        };
+        if let Some(search) = self.search.as_mut() {
+            search.case_sensitive = !case_sensitive;
+        }
+        let new_status = if !case_sensitive { "ON" } else { "OFF" };
+        self.set_message(format!("Search: {} (Match case: {})", query, new_status));
+        self.search_from_start(viewport);
+    }
+
+    pub fn transition_to_replacing(&mut self) {
+        if let Some(search) = self.search.as_mut() {
+            search.mode = SearchMode::Replacing;
+            self.set_message("Replace? Enter=one, A=all, Esc=cancel".to_string());
+        }
     }
 
     pub fn apply_remote_insert(&mut self, pos: usize, text: &str, viewport: ViewportMetrics) {
@@ -996,8 +1100,8 @@ impl EditorCore {
     }
 
     fn search_from_start(&mut self, viewport: ViewportMetrics) {
-        let query = match &self.search {
-            Some(search) => search.query.clone(),
+        let (query, case_sensitive) = match &self.search {
+            Some(search) => (search.query.clone(), search.case_sensitive),
             None => return,
         };
 
@@ -1006,7 +1110,7 @@ impl EditorCore {
             .as_ref()
             .and_then(|search| search.current_match)
             .unwrap_or(0);
-        if let Some(pos) = self.buffer.find_next(&query, from) {
+        if let Some(pos) = self.buffer.find_next(&query, from, case_sensitive) {
             self.jump_to_match(pos, viewport);
         }
     }
