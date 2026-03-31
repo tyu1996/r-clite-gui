@@ -39,6 +39,11 @@ impl Buffer {
         }
     }
 
+    /// Return the full buffer content as a String.
+    pub fn content(&self) -> String {
+        self.rope.to_string()
+    }
+
     /// Open a file from disk into a new buffer.
     ///
     /// If `path` does not exist on disk, returns an empty buffer with that
@@ -226,8 +231,19 @@ impl Buffer {
             return None;
         }
         // Search forward from `from` (wrapping).
+        // Track if we've wrapped past doc_len to avoid infinite loops.
+        let start_offset = if from >= doc_len { 0 } else { from };
+        let mut wrapped = false;
         for offset in 0..doc_len {
-            let pos = (from + offset) % doc_len;
+            let raw_pos = start_offset + offset;
+            if raw_pos >= doc_len {
+                wrapped = true;
+            }
+            let pos = raw_pos % doc_len;
+            if wrapped && pos <= start_offset % doc_len && offset > 0 {
+                // We've wrapped and scanned all positions
+                break;
+            }
             if pos + query_len > doc_len {
                 continue;
             }

@@ -670,6 +670,12 @@ impl EditorCore {
         }
     }
 
+    pub fn set_search_replacement_for_test(&mut self, replacement: String) {
+        if let Some(search) = self.search.as_mut() {
+            search.replacement = replacement;
+        }
+    }
+
     pub fn toggle_case_sensitive(&mut self, viewport: ViewportMetrics) {
         if let Some(search) = self.search.as_mut() {
             search.case_sensitive = !search.case_sensitive;
@@ -1138,6 +1144,11 @@ impl EditorCore {
             .unwrap_or(0);
         if let Some(pos) = self.buffer.find_next(&query, from, case_sensitive) {
             self.jump_to_match(pos, viewport);
+        } else {
+            // Clear current_match when no match is found (e.g., after toggling case sensitivity)
+            if let Some(search) = self.search.as_mut() {
+                search.current_match = None;
+            }
         }
     }
 

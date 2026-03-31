@@ -165,3 +165,69 @@ fn selection_across_lines_includes_newline() {
     let text = core.get_selected_text().unwrap();
     assert_eq!(text, "ab\n");
 }
+
+// ── Case-sensitive search ─────────────────────────────────────────────────────
+
+#[test]
+fn case_sensitive_search_finds_exact_match() {
+    let mut core = make_core("Hello hello HELLO");
+    core.apply_command(Command::Find, vp()).unwrap();
+    core.toggle_case_sensitive(vp()); // enable case-sensitive
+    core.set_search_query("HELLO".to_string(), vp());
+    // Should find position 12 (uppercase HELLO), not 0 (Hello) or 6 (hello)
+    assert_eq!(core.snapshot().search_match, Some((12, 5)));
+}
+
+#[test]
+fn case_insensitive_search_finds_all_variants() {
+    let mut core = make_core("Hello hello HELLO");
+    core.apply_command(Command::Find, vp()).unwrap();
+    // case_sensitive is false by default, so case-insensitive search works
+    core.set_search_query("hello".to_string(), vp());
+    // Finds first at position 0
+    assert_eq!(core.snapshot().search_match, Some((0, 5)));
+    core.search_next(vp());
+    // Second at position 6
+    assert_eq!(core.snapshot().search_match, Some((6, 5)));
+    core.search_next(vp());
+    // Wraps to 12
+    assert_eq!(core.snapshot().search_match, Some((12, 5)));
+}
+
+#[test]
+fn toggle_case_sensitive_switches_behavior() {
+    let mut core = make_core("Hello");
+    core.apply_command(Command::Find, vp()).unwrap();
+    core.set_search_query("hello".to_string(), vp());
+    assert!(core.snapshot().search_match.is_some()); // found
+    core.toggle_case_sensitive(vp());
+    assert_eq!(core.snapshot().search_match, None); // no match when case-sensitive
+    core.toggle_case_sensitive(vp());
+    assert!(core.snapshot().search_match.is_some()); // back to found
+}
+
+// ── Replace ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn replace_one_replaces_current_match_and_advances() {
+    let mut core = make_core("Hello world");
+    core.apply_command(Command::Find, vp()).unwrap();
+    core.set_search_query("world".to_string(), vp());
+    assert_eq!(core.snapshot().search_match, Some((6, 5)));
+    core.set_search_replacement_for_test("rust".to_string());
+    core.apply_replace_one(vp());
+    let content = core.buffer().content();
+    assert!(content.contains("rust"));
+    assert!(!content.contains("world"));
+}
+
+#[test]
+fn replace_all_replaces_everything() {
+    let mut core = make_core("foo foo foo");
+    core.apply_command(Command::Find, vp()).unwrap();
+    core.set_search_query("foo".to_string(), vp());
+    core.set_search_replacement_for_test("bar".to_string());
+    core.apply_replace_all(vp());
+    let content = core.buffer().content();
+    assert_eq!(content, "bar bar bar");
+}
