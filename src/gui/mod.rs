@@ -48,6 +48,9 @@ pub struct GuiApp {
     is_dragging: bool,
     // Editor area rect for mouse interaction
     editor_rect: Option<egui::Rect>,
+    // Replace mode state
+    gui_search_mode: bool,
+    replace_text: String,
 }
 
 impl GuiApp {
@@ -69,6 +72,8 @@ impl GuiApp {
             drag_start: None,
             is_dragging: false,
             editor_rect: None,
+            gui_search_mode: false,
+            replace_text: String::new(),
         }
     }
 
@@ -285,15 +290,32 @@ impl GuiApp {
                 ..
             } => {
                 self.core.cancel_search();
+                self.gui_search_mode = false;
                 true
             }
             egui::Event::Key {
                 key: Key::Enter,
                 pressed: true,
+                modifiers,
                 ..
             } => {
-                self.core.search_next(self.cached_viewport);
-                true
+                if modifiers.command && modifiers.shift {
+                    // Cmd+Shift+Enter → Replace All
+                    if self.gui_search_mode && self.core.is_search_active() {
+                        self.core.apply_replace_all(self.cached_viewport);
+                        self.gui_search_mode = false;
+                        return true;
+                    }
+                }
+                if self.gui_search_mode && self.core.is_search_active() {
+                    // Enter in Replace mode → Replace current and advance
+                    self.core.apply_replace_one(self.cached_viewport);
+                    true
+                } else {
+                    // Enter in Find mode → advance to next match
+                    self.core.search_next(self.cached_viewport);
+                    true
+                }
             }
             egui::Event::Key {
                 key: Key::Backspace,
@@ -372,6 +394,25 @@ impl GuiApp {
                             self.core.set_message("Clipboard not available".to_string());
                         }
                     }
+                }
+                return true;
+            }
+            Command::Replace => {
+                if self.core.is_search_active() {
+                    self.gui_search_mode = true;
+                }
+                return true;
+            }
+            Command::ToggleCaseSensitive => {
+                if self.core.is_search_active() {
+                    self.core.toggle_case_sensitive(self.cached_viewport);
+                }
+                return true;
+            }
+            Command::ReplaceAll => {
+                if self.core.is_search_active() {
+                    self.core.apply_replace_all(self.cached_viewport);
+                    self.gui_search_mode = false;
                 }
                 return true;
             }
@@ -464,6 +505,40 @@ impl GuiApp {
                         if ui.button("Next").clicked() {
                             self.core.search_next(self.cached_viewport);
                         }
+                        if self.gui_search_mode {
+                            // Replace field
+                            ui.label("Replace:");
+                            let response = egui::TextEdit::singleline(&mut self.replace_text)
+                                .desired_width(120.0)
+                                .show(ui);
+                            if response.response.lost_focus() {
+                                // Update replacement text in core when user finishes editing
+                                if let Some(replacement) = self.core.search_replacement_mut() {
+                                    *replacement = self.replace_text.clone();
+                                }
+                            }
+                            // Match Case checkbox
+                            let snapshot = self.core.snapshot();
+                            let mut case_on = snapshot.case_sensitive;
+                            if ui.checkbox(&mut case_on, "Match Case").clicked() {
+                                self.core.toggle_case_sensitive(self.cached_viewport);
+                            }
+                            // Replace button
+                            if ui.button("Replace").clicked() {
+                                if let Some(replacement) = self.core.search_replacement_mut() {
+                                    *replacement = self.replace_text.clone();
+                                }
+                                self.core.apply_replace_one(self.cached_viewport);
+                            }
+                            // Replace All button
+                            if ui.button("Replace All").clicked() {
+                                if let Some(replacement) = self.core.search_replacement_mut() {
+                                    *replacement = self.replace_text.clone();
+                                }
+                                self.core.apply_replace_all(self.cached_viewport);
+                                self.gui_search_mode = false;
+                            }
+                        }
                     }
                 });
             });
@@ -479,6 +554,9 @@ impl GuiApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(status).monospace().strong());
+                        if snapshot.case_sensitive {
+                            ui.label(RichText::new(" | Match case: ON").monospace().color(ui.visuals().hyperlink_color));
+                        }
                     });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -722,6 +800,19 @@ fn map_shortcut(key: Key, modifiers: egui::Modifiers) -> Option<Command> {
         return None;
     }
 
+    // macOS: Cmd+Option+F → Replace mode
+    if let Key::F = key {
+        if modifiers.command && modifiers.alt {
+            return Some(Command::Replace);
+        }
+    }
+    // Option+C → Toggle case (handled in apply_command when search is active)
+    if let Key::C = key {
+        if modifiers.alt {
+            return Some(Command::ToggleCaseSensitive);
+        }
+    }
+
     match key {
         Key::Q => Some(Command::Quit),
         Key::S if modifiers.shift => Some(Command::SaveAs),
@@ -729,10 +820,10 @@ fn map_shortcut(key: Key, modifiers: egui::Modifiers) -> Option<Command> {
         Key::O => Some(Command::Open),
         Key::Z => Some(Command::Undo),
         Key::Y => Some(Command::Redo),
-        Key::F => Some(Command::Find),
+        Key::F if !modifiers.alt => Some(Command::Find),
         Key::L => Some(Command::ToggleLineNumbers),
         Key::W if modifiers.shift => Some(Command::ToggleSoftWrap),
-        Key::C => Some(Command::Copy),
+        Key::C if !modifiers.alt => Some(Command::Copy),
         Key::V => Some(Command::Paste),
         Key::X => Some(Command::Cut),
         Key::A => Some(Command::SelectAll),
