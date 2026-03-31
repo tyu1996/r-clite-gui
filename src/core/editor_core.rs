@@ -647,16 +647,13 @@ impl EditorCore {
     }
 
     pub fn toggle_case_sensitive(&mut self, viewport: ViewportMetrics) {
-        let (case_sensitive, query) = match &self.search {
-            Some(search) => (search.case_sensitive, search.query.clone()),
-            None => return,
-        };
         if let Some(search) = self.search.as_mut() {
-            search.case_sensitive = !case_sensitive;
+            search.case_sensitive = !search.case_sensitive;
+            let status = if search.case_sensitive { "ON" } else { "OFF" };
+            let query = search.query.clone();
+            self.set_message(format!("Search: {} (Match case: {})", query, status));
+            self.search_from_start(viewport);
         }
-        let new_status = if !case_sensitive { "ON" } else { "OFF" };
-        self.set_message(format!("Search: {} (Match case: {})", query, new_status));
-        self.search_from_start(viewport);
     }
 
     pub fn transition_to_replacing(&mut self) {
