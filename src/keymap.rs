@@ -74,6 +74,14 @@ pub enum Command {
     ToggleSoftWrap,
     /// Reflow the current paragraph to the configured wrap column.
     ReflowParagraph,
+    /// Enter replace mode (Ctrl+R in search).
+    Replace,
+    /// Toggle case sensitivity in search (Alt+C).
+    ToggleCaseSensitive,
+    /// Confirm replace current match (Enter in Replacing mode).
+    ReplaceOne,
+    /// Confirm replace all remaining matches (A in Replacing mode).
+    ReplaceAll,
     /// No-op — the key has no binding in the current context.
     None,
 }
@@ -135,6 +143,12 @@ pub fn map(event: KeyEvent) -> Command {
 
         // Find
         KeyCode::Char('f') if ctrl => Command::Find,
+
+        // Replace (Ctrl+R — only active when search is on, guarded in execute/handle_search_key)
+        KeyCode::Char('r') if ctrl => Command::Replace,
+        // Case sensitivity toggle (Alt+C — only active when search is on)
+        KeyCode::Char('c') if alt => Command::ToggleCaseSensitive,
+        // ReplaceOne/ReplaceAll are dispatched by handle_search_key, not map()
 
         // Toggle line numbers
         KeyCode::Char('l') if ctrl => Command::ToggleLineNumbers,
