@@ -42,6 +42,7 @@ pub fn launch(file: Option<PathBuf>) -> Result<()> {
 pub struct GuiApp {
     core: EditorCore,
     cached_viewport: ViewportMetrics,
+    cached_row_height: f32,
     clipboard: Option<Clipboard>,
     // Mouse drag state for text selection
     drag_start: Option<(usize, usize)>,
@@ -68,6 +69,7 @@ impl GuiApp {
         Self {
             core,
             cached_viewport: ViewportMetrics { rows: 1, cols: 1 },
+            cached_row_height: 18.0,
             clipboard,
             drag_start: None,
             is_dragging: false,
@@ -262,7 +264,7 @@ impl GuiApp {
     }
 
     fn handle_scroll(&mut self, delta: egui::Vec2) {
-        let lines = (delta.y / 18.0).round() as isize; // 18.0 is row_height
+        let lines = (delta.y / self.cached_row_height).round() as isize;
         if lines > 0 {
             self.scroll_down(lines as usize);
         } else if lines < 0 {
@@ -271,8 +273,22 @@ impl GuiApp {
     }
 
     fn scroll_up(&mut self, lines: usize) {
-        self.core
-            .set_scroll_offset(self.core.snapshot().scroll_offset.saturating_sub(lines));
+        let snapshot = self.core.snapshot();
+        let viewport = self.cached_viewport;
+        let line_count = self.core.buffer().line_count();
+        let max_scroll = if self.core.soft_wrap {
+            let gutter_chars = if snapshot.show_line_numbers {
+                line_count.to_string().len() + 1
+            } else {
+                0
+            };
+            let text_width = viewport.cols.saturating_sub(gutter_chars);
+            self.core.total_visual_rows(text_width).saturating_sub(viewport.rows)
+        } else {
+            line_count.saturating_sub(viewport.rows)
+        };
+        let new_scroll = snapshot.scroll_offset.saturating_sub(lines).min(max_scroll);
+        self.core.set_scroll_offset(new_scroll);
     }
 
     fn scroll_down(&mut self, lines: usize) {
@@ -589,6 +605,7 @@ impl GuiApp {
             .show(ctx, |ui| {
                 let available = ui.available_size();
                 let (row_height, char_width, line_height) = font_metrics(ui);
+                self.cached_row_height = row_height;
                 self.cached_viewport = viewport_from_size(
                     available,
                     char_width,
