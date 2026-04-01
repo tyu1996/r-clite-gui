@@ -1193,6 +1193,16 @@ impl EditorCore {
         (line_len + wrap_width - 1) / wrap_width
     }
 
+    /// Total number of visual rows for all content when wrapped at `wrap_width`.
+    pub fn total_visual_rows(&self, wrap_width: usize) -> usize {
+        if wrap_width == 0 {
+            return self.buffer.line_count();
+        }
+        (0..self.buffer.line_count())
+            .map(|r| self.visual_rows_for(r, wrap_width))
+            .sum()
+    }
+
     /// Visual row index of the cursor (summing visual rows for all preceding buffer rows).
     fn cursor_visual_row(&self, wrap_width: usize) -> usize {
         if wrap_width == 0 {
