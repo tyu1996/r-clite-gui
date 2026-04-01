@@ -277,7 +277,19 @@ impl GuiApp {
 
     fn scroll_down(&mut self, lines: usize) {
         let snapshot = self.core.snapshot();
-        let max_scroll = self.core.buffer().line_count().saturating_sub(1);
+        let viewport = self.cached_viewport;
+        let line_count = self.core.buffer().line_count();
+        let max_scroll = if self.core.soft_wrap {
+            let gutter_chars = if snapshot.show_line_numbers {
+                line_count.to_string().len() + 1
+            } else {
+                0
+            };
+            let text_width = viewport.cols.saturating_sub(gutter_chars);
+            self.core.total_visual_rows(text_width).saturating_sub(viewport.rows)
+        } else {
+            line_count.saturating_sub(viewport.rows)
+        };
         let new_scroll = (snapshot.scroll_offset + lines).min(max_scroll);
         self.core.set_scroll_offset(new_scroll);
     }
@@ -636,16 +648,11 @@ impl GuiApp {
                     None
                 };
 
-                for (row_index, file_row) in (first_line..last_line).enumerate() {
-                    let y = rect.top() + PANEL_PADDING + row_index as f32 * row_height;
-                    let line_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.left() + PANEL_PADDING, y),
-                        Vec2::new(rect.width() - PANEL_PADDING * 2.0, row_height),
-                    );
-                    if snapshot.cursor_row == file_row {
-                        painter.rect_filled(line_rect, 2.0, current_line_bg);
-                    }
-
+                let mut current_y = rect.top() + PANEL_PADDING;
+                let mut showing_line_number = false;
+                for (_row_index, file_row) in (first_line..last_line).enumerate() {
+                    // Reset line number tracking for each new buffer row
+                    showing_line_number = false;
                     let line = self.core.buffer().line(file_row);
                     let line_start = self.core.buffer().char_offset_for(file_row, 0);
                     let (render_col_offset, render_max_chars) = if snapshot.soft_wrap {
@@ -670,19 +677,63 @@ impl GuiApp {
                     );
                     in_block_comment = next_block_comment;
 
-                    if snapshot.show_line_numbers {
-                        let number = format!("{:>width$} ", file_row + 1, width = gutter_chars - 1);
-                        painter.text(
-                            egui::pos2(gutter_x, y),
-                            Align2::LEFT_TOP,
-                            number,
-                            FontId::monospace(row_height - 2.0),
-                            gutter_color,
-                        );
+                    // For soft wrap, use galley height for line background so highlight
+                    // covers all wrapped visual rows of the current line
+                    let galley = painter.layout_job(job);
+                    let line_rect_height = if snapshot.soft_wrap {
+                        galley.size().y
+                    } else {
+                        row_height
+                    };
+                    let line_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + PANEL_PADDING, current_y),
+                        Vec2::new(rect.width() - PANEL_PADDING * 2.0, line_rect_height),
+                    );
+                    if snapshot.cursor_row == file_row {
+                        painter.rect_filled(line_rect, 2.0, current_line_bg);
                     }
 
-                    let galley = painter.layout_job(job);
-                    let text_origin = egui::pos2(text_x, y);
+                    // With soft wrap, only show line number on first visual row of buffer row.
+                    // For wrapped lines taller than row_height, we must clear the gutter
+                    // background for the FULL galley height to prevent text overlap.
+                    if snapshot.show_line_numbers {
+                        let _full_gutter_height = if snapshot.soft_wrap && galley.size().y > row_height {
+                            // Draw gutter background for full galley height so continuation
+                            // rows don't show old text underneath
+                            let gutter_rect = egui::Rect::from_min_size(
+                                egui::pos2(gutter_x, current_y),
+                                Vec2::new(gutter_px, galley.size().y),
+                            );
+                            painter.rect_filled(gutter_rect, 0.0, background_color(self.core.theme()));
+                            galley.size().y
+                        } else {
+                            row_height
+                        };
+                        // Show line number only on first visual row of each buffer row
+                        if !snapshot.soft_wrap || !showing_line_number {
+                            let number = format!("{:>width$} ", file_row + 1, width = gutter_chars - 1);
+                            painter.text(
+                                egui::pos2(gutter_x, current_y),
+                                Align2::LEFT_TOP,
+                                number,
+                                FontId::monospace(row_height - 2.0),
+                                gutter_color,
+                            );
+                            showing_line_number = true;
+                        } else {
+                            // Blank gutter space for continuation rows
+                            let blank: String = " ".repeat(gutter_chars);
+                            painter.text(
+                                egui::pos2(gutter_x, current_y),
+                                Align2::LEFT_TOP,
+                                blank,
+                                FontId::monospace(row_height - 2.0),
+                                gutter_color,
+                            );
+                        }
+                    }
+
+                    let text_origin = egui::pos2(text_x, current_y);
                     painter.galley(text_origin, galley.clone(), text_color);
 
                     // Draw selection highlight using galley cursor geometry instead of
@@ -740,27 +791,36 @@ impl GuiApp {
                             cursor_color,
                         );
                     }
+
+                    // Advance Y position for next row - use galley height when soft wrapping
+                    // so that wrapped lines don't overlap with the next buffer row
+                    if snapshot.soft_wrap {
+                        current_y += galley.size().y;
+                    } else {
+                        current_y += row_height;
+                    }
                 }
 
                 if last_line < first_line + visible_rows {
-                    for row_index in (last_line - first_line)..visible_rows {
-                        let y = rect.top() + PANEL_PADDING + row_index as f32 * row_height;
+                    for _ in 0..(first_line + visible_rows - last_line) {
                         if snapshot.show_line_numbers {
+                            let blank: String = " ".repeat(gutter_chars);
                             painter.text(
-                                egui::pos2(gutter_x, y),
+                                egui::pos2(gutter_x, current_y),
                                 Align2::LEFT_TOP,
-                                "",
+                                blank,
                                 FontId::monospace(row_height - 2.0),
                                 gutter_color,
                             );
                         }
                         painter.text(
-                            egui::pos2(text_x, y),
+                            egui::pos2(text_x, current_y),
                             Align2::LEFT_TOP,
                             "~",
                             FontId::monospace(row_height - 2.0),
-                            gutter_color,
+                            Color32::from_rgb(0, 255, 255), // DarkCyan equivalent
                         );
+                        current_y += row_height;
                     }
                 }
             });
