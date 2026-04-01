@@ -714,18 +714,15 @@ impl GuiApp {
                     // For wrapped lines taller than row_height, we must clear the gutter
                     // background for the FULL galley height to prevent text overlap.
                     if snapshot.show_line_numbers {
-                        let _full_gutter_height = if snapshot.soft_wrap && galley.size().y > row_height {
-                            // Draw gutter background for full galley height so continuation
-                            // rows don't show old text underneath
+                        // Clear gutter background for full galley height so continuation
+                        // rows don't show old text underneath
+                        if snapshot.soft_wrap && galley.size().y > row_height {
                             let gutter_rect = egui::Rect::from_min_size(
                                 egui::pos2(gutter_x, current_y),
                                 Vec2::new(gutter_px, galley.size().y),
                             );
                             painter.rect_filled(gutter_rect, 0.0, background_color(self.core.theme()));
-                            galley.size().y
-                        } else {
-                            row_height
-                        };
+                        }
                         // Show line number only on first visual row of each buffer row
                         if !snapshot.soft_wrap || !showing_line_number {
                             let number = format!("{:>width$} ", file_row + 1, width = gutter_chars - 1);
