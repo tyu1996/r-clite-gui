@@ -1,11 +1,16 @@
 use egui_kittest::Harness;
 use r_clite::{buffer::Buffer, config::Config, gui::GuiApp};
 
-fn make_harness(content: &str) -> Harness<'_, GuiApp> {
+fn make_harness_with_size(content: &str, size: egui::Vec2) -> Harness<'_, GuiApp> {
     let buffer = Buffer::from_content(content.to_string());
     let mut harness = Harness::new_eframe(|_cc| GuiApp::new(buffer, Config::default(), None));
+    harness.set_size(size);
     harness.run_steps(2); // two frames: initial layout + repaint flush
     harness
+}
+
+fn make_harness(content: &str) -> Harness<'_, GuiApp> {
+    make_harness_with_size(content, egui::Vec2::new(800.0, 600.0))
 }
 
 /// Build an egui Key event (pressed=true, no modifiers).
@@ -159,6 +164,46 @@ fn click_at_second_row_y_positions_cursor_at_row_1() {
 }
 
 #[test]
+fn click_on_wrapped_second_visual_row_stays_on_first_buffer_row() {
+    let mut harness = make_harness_with_size(
+        "abcdefghijklmnopqrstuvwx\nsecond line\n",
+        egui::Vec2::new(220.0, 200.0),
+    );
+    let origin = editor_text_origin(&harness);
+    let row_height = 18.0_f32;
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + row_height + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    let snapshot = harness.state().core().snapshot();
+    assert_eq!(snapshot.cursor_row, 0);
+    assert!(snapshot.cursor_col > 0);
+}
+
+#[test]
+fn click_in_second_visual_row_of_wrapped_line_moves_cursor_forward() {
+    let mut harness = make_harness_with_size(
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+        egui::Vec2::new(180.0, 160.0),
+    );
+    let origin = editor_text_origin(&harness);
+    let row_height = 18.0_f32;
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + row_height + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+    let snapshot = harness.state().core().snapshot();
+    assert_eq!(snapshot.cursor_row, 0);
+    assert!(snapshot.cursor_col > 0);
+}
+
+#[test]
 fn drag_across_chars_creates_selection() {
     let mut harness = make_harness("hello world\n");
     let origin = editor_text_origin(&harness);
@@ -184,6 +229,33 @@ fn drag_across_chars_creates_selection() {
     });
     harness.run_steps(2); // two frames: initial layout + repaint flush
     assert!(harness.state().core().has_selection());
+}
+
+#[test]
+fn scrolling_wrapped_content_keeps_the_same_buffer_row_at_top() {
+    let mut harness = make_harness_with_size(
+        "abcdefghijklmnopqrstuvwxyz0123456789\nshort",
+        egui::Vec2::new(180.0, 160.0),
+    );
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::Vec2::new(0.0, 18.0),
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+
+    let origin = editor_text_origin(&harness);
+    harness.event(egui::Event::PointerButton {
+        pos: egui::Pos2::new(origin.x + 0.5, origin.y + 0.5),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(2); // two frames: initial layout + repaint flush
+
+    let snapshot = harness.state().core().snapshot();
+    assert_eq!(snapshot.cursor_row, 0);
+    assert!(snapshot.cursor_col > 0);
 }
 
 #[test]

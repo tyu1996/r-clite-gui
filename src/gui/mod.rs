@@ -248,19 +248,32 @@ impl GuiApp {
             return None;
         }
 
-        // Calculate row and col
         let rel_y = pos.y - text_y;
         let rel_x = pos.x - text_x;
-        let row = (rel_y / row_height).floor() as usize + snapshot.scroll_offset;
-        let col = (rel_x / char_width).floor() as usize + snapshot.col_offset;
+        if snapshot.soft_wrap {
+            let text_cols = self.cached_viewport.cols.saturating_sub(gutter_chars).max(1);
+            let visual_rows = self.soft_wrap_visual_rows(text_cols);
+            let visual_row = (rel_y / row_height).floor() as usize + snapshot.scroll_offset;
+            let (row, col_start) = visual_rows
+                .get(visual_row)
+                .copied()
+                .or_else(|| visual_rows.last().copied())?;
+            let col = col_start + (rel_x / char_width).floor() as usize;
+            let line_len = self.core.buffer().line_len(row);
+            Some((row, col.min(line_len)))
+        } else {
+            // Calculate row and col in the non-wrapped grid
+            let row = (rel_y / row_height).floor() as usize + snapshot.scroll_offset;
+            let col = (rel_x / char_width).floor() as usize + snapshot.col_offset;
 
-        // Clamp to valid range
-        let max_row = self.core.buffer().line_count().saturating_sub(1);
-        let clamped_row = row.min(max_row);
-        let line_len = self.core.buffer().line_len(clamped_row);
-        let clamped_col = col.min(line_len);
+            // Clamp to valid range
+            let max_row = self.core.buffer().line_count().saturating_sub(1);
+            let clamped_row = row.min(max_row);
+            let line_len = self.core.buffer().line_len(clamped_row);
+            let clamped_col = col.min(line_len);
 
-        Some((clamped_row, clamped_col))
+            Some((clamped_row, clamped_col))
+        }
     }
 
     fn handle_scroll(&mut self, delta: egui::Vec2) {
@@ -308,6 +321,25 @@ impl GuiApp {
         };
         let new_scroll = (snapshot.scroll_offset + lines).min(max_scroll);
         self.core.set_scroll_offset(new_scroll);
+    }
+
+    fn soft_wrap_visual_rows(&self, text_cols: usize) -> Vec<(usize, usize)> {
+        let mut rows = Vec::new();
+        let line_count = self.core.buffer().line_count();
+        let segment_width = text_cols.max(1);
+
+        for file_row in 0..line_count {
+            let line_len = self.core.buffer().line_len(file_row);
+            let mut col_start = 0usize;
+            rows.push((file_row, col_start));
+
+            while col_start + segment_width < line_len {
+                col_start += segment_width;
+                rows.push((file_row, col_start));
+            }
+        }
+
+        rows
     }
 
     fn handle_search_event(&mut self, ctx: &Context, event: egui::Event) -> bool {
@@ -640,11 +672,22 @@ impl GuiApp {
                 let current_line_bg = current_line_color(self.core.theme());
                 let search_bg = search_bg_color(self.core.theme());
 
-                let first_line = snapshot.scroll_offset;
                 let visible_rows = self.cached_viewport.rows.max(1);
-                let last_line = (first_line + visible_rows).min(line_count);
                 let mut in_block_comment = false;
                 let selection_bg = selection_bg_color(self.core.theme());
+                let first_line = snapshot.scroll_offset;
+                let last_line = (first_line + visible_rows).min(line_count);
+                let visual_rows = if snapshot.soft_wrap {
+                    self.soft_wrap_visual_rows(text_cols)
+                } else {
+                    Vec::new()
+                };
+                let first_visual_row = first_line;
+                let last_visual_row = if snapshot.soft_wrap {
+                    (first_visual_row + visible_rows).min(visual_rows.len())
+                } else {
+                    (first_visual_row + visible_rows).min(line_count)
+                };
 
                 // Get normalized selection range if there is one
                 let selection_range = if let (Some(start), Some(end)) =
@@ -666,156 +709,233 @@ impl GuiApp {
                 };
 
                 let mut current_y = rect.top() + PANEL_PADDING;
-                let mut showing_line_number = false;
-                for (_row_index, file_row) in (first_line..last_line).enumerate() {
-                    // Reset line number tracking for each new buffer row
-                    showing_line_number = false;
-                    let line = self.core.buffer().line(file_row);
-                    let line_start = self.core.buffer().char_offset_for(file_row, 0);
-                    let (render_col_offset, render_max_chars) = if snapshot.soft_wrap {
-                        (0, usize::MAX)
-                    } else {
-                        (snapshot.col_offset, text_cols)
-                    };
-                    let (job, next_block_comment) = line_layout_job(
-                        &line,
-                        snapshot.file_ext.as_deref(),
-                        self.core.theme(),
-                        FontId::monospace(row_height - 2.0),
-                        text_color,
-                        search_bg,
-                        snapshot.search_match,
-                        line_start,
-                        render_col_offset,
-                        render_max_chars,
-                        in_block_comment,
-                        snapshot.soft_wrap,
-                        rect.width() - PANEL_PADDING * 2.0 - gutter_px,
-                    );
-                    in_block_comment = next_block_comment;
+                if snapshot.soft_wrap {
+                    for visual_row in first_visual_row..last_visual_row {
+                        let (file_row, col_start) = visual_rows[visual_row];
+                        let line = self.core.buffer().line(file_row);
+                        let line_start = self.core.buffer().char_offset_for(file_row, 0);
+                        let (job, next_block_comment) = line_layout_job(
+                            &line,
+                            snapshot.file_ext.as_deref(),
+                            self.core.theme(),
+                            FontId::monospace(row_height - 2.0),
+                            text_color,
+                            search_bg,
+                            snapshot.search_match,
+                            line_start,
+                            col_start,
+                            text_cols,
+                            in_block_comment,
+                            false,
+                            rect.width() - PANEL_PADDING * 2.0 - gutter_px,
+                        );
+                        in_block_comment = next_block_comment;
 
-                    // For soft wrap, use galley height for line background so highlight
-                    // covers all wrapped visual rows of the current line
-                    let galley = painter.layout_job(job);
-                    let line_rect_height = if snapshot.soft_wrap {
-                        galley.size().y
-                    } else {
-                        row_height
-                    };
-                    let line_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.left() + PANEL_PADDING, current_y),
-                        Vec2::new(rect.width() - PANEL_PADDING * 2.0, line_rect_height),
-                    );
-                    if snapshot.cursor_row == file_row {
-                        painter.rect_filled(line_rect, 2.0, current_line_bg);
-                    }
-
-                    // With soft wrap, only show line number on first visual row of buffer row.
-                    // For wrapped lines taller than row_height, we must clear the gutter
-                    // background for the FULL galley height to prevent text overlap.
-                    if snapshot.show_line_numbers {
-                        // Clear gutter background for full galley height so continuation
-                        // rows don't show old text underneath
-                        if snapshot.soft_wrap && galley.size().y > row_height {
-                            let gutter_rect = egui::Rect::from_min_size(
-                                egui::pos2(gutter_x, current_y),
-                                Vec2::new(gutter_px, galley.size().y),
-                            );
-                            painter.rect_filled(gutter_rect, 0.0, background_color(self.core.theme()));
+                        let galley = painter.layout_job(job);
+                        let line_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.left() + PANEL_PADDING, current_y),
+                            Vec2::new(rect.width() - PANEL_PADDING * 2.0, row_height),
+                        );
+                        if snapshot.cursor_row == file_row {
+                            painter.rect_filled(line_rect, 2.0, current_line_bg);
                         }
-                        // Show line number only on first visual row of each buffer row
-                        if !snapshot.soft_wrap || !showing_line_number {
-                            let number = format!("{:>width$} ", file_row + 1, width = gutter_chars - 1);
-                            painter.text(
-                                egui::pos2(gutter_x, current_y),
-                                Align2::LEFT_TOP,
-                                number,
-                                FontId::monospace(row_height - 2.0),
-                                gutter_color,
-                            );
-                            showing_line_number = true;
-                        } else {
-                            // Blank gutter space for continuation rows
-                            let blank: String = " ".repeat(gutter_chars);
-                            painter.text(
-                                egui::pos2(gutter_x, current_y),
-                                Align2::LEFT_TOP,
-                                blank,
-                                FontId::monospace(row_height - 2.0),
-                                gutter_color,
-                            );
-                        }
-                    }
 
-                    let text_origin = egui::pos2(text_x, current_y);
-                    painter.galley(text_origin, galley.clone(), text_color);
-
-                    // Draw selection highlight using galley cursor geometry instead of
-                    // fixed char-width math so the highlight aligns exactly with text.
-                    if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) =
-                        selection_range
-                    {
-                        if file_row >= sel_start_row && file_row <= sel_end_row {
-                            let line_len = self.core.buffer().line_len(file_row);
-                            let line_sel_start = if file_row == sel_start_row {
-                                sel_start_col
-                            } else {
-                                0
-                            };
-                            let line_sel_end = if file_row == sel_end_row {
-                                sel_end_col
-                            } else {
-                                line_len
-                            };
-
-                            let visible_start = line_sel_start.max(snapshot.col_offset);
-                            let visible_end =
-                                line_sel_end.min(snapshot.col_offset.saturating_add(text_cols));
-
-                            if visible_start < visible_end {
-                                let start_cursor =
-                                    CCursor::new(visible_start.saturating_sub(snapshot.col_offset));
-                                let end_cursor =
-                                    CCursor::new(visible_end.saturating_sub(snapshot.col_offset));
-                                let start_rect = galley.pos_from_cursor(start_cursor);
-                                let end_rect = galley.pos_from_cursor(end_cursor);
-                                let sel_rect = egui::Rect::from_min_size(
-                                    egui::pos2(
-                                        text_origin.x + start_rect.min.x,
-                                        text_origin.y + start_rect.min.y,
-                                    ),
-                                    Vec2::new(
-                                        (end_rect.min.x - start_rect.min.x).max(2.0),
-                                        start_rect.height().max(row_height),
-                                    ),
+                        if snapshot.show_line_numbers {
+                            if col_start == 0 {
+                                let number =
+                                    format!("{:>width$} ", file_row + 1, width = gutter_chars - 1);
+                                painter.text(
+                                    egui::pos2(gutter_x, current_y),
+                                    Align2::LEFT_TOP,
+                                    number,
+                                    FontId::monospace(row_height - 2.0),
+                                    gutter_color,
                                 );
-                                painter.rect_filled(sel_rect, 1.0, selection_bg);
+                            } else {
+                                let blank: String = " ".repeat(gutter_chars);
+                                painter.text(
+                                    egui::pos2(gutter_x, current_y),
+                                    Align2::LEFT_TOP,
+                                    blank,
+                                    FontId::monospace(row_height - 2.0),
+                                    gutter_color,
+                                );
                             }
                         }
-                    }
 
-                    if snapshot.cursor_row == file_row {
-                        draw_cursor(
-                            &painter,
-                            text_origin,
-                            &galley,
-                            snapshot.cursor_col,
+                        let text_origin = egui::pos2(text_x, current_y);
+                        painter.galley(text_origin, galley.clone(), text_color);
+
+                        if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) =
+                            selection_range
+                        {
+                            if file_row >= sel_start_row && file_row <= sel_end_row {
+                                let line_len = self.core.buffer().line_len(file_row);
+                                let line_sel_start = if file_row == sel_start_row {
+                                    sel_start_col
+                                } else {
+                                    0
+                                };
+                                let line_sel_end = if file_row == sel_end_row {
+                                    sel_end_col
+                                } else {
+                                    line_len
+                                };
+
+                                let visible_start = line_sel_start.max(col_start);
+                                let visible_end =
+                                    line_sel_end.min(col_start.saturating_add(text_cols));
+
+                                if visible_start < visible_end {
+                                    let start_cursor = CCursor::new(visible_start - col_start);
+                                    let end_cursor = CCursor::new(visible_end - col_start);
+                                    let start_rect = galley.pos_from_cursor(start_cursor);
+                                    let end_rect = galley.pos_from_cursor(end_cursor);
+                                    let sel_rect = egui::Rect::from_min_size(
+                                        egui::pos2(
+                                            text_origin.x + start_rect.min.x,
+                                            text_origin.y + start_rect.min.y,
+                                        ),
+                                        Vec2::new(
+                                            (end_rect.min.x - start_rect.min.x).max(2.0),
+                                            start_rect.height().max(row_height),
+                                        ),
+                                    );
+                                    painter.rect_filled(sel_rect, 1.0, selection_bg);
+                                }
+                            }
+                        }
+
+                        if snapshot.cursor_row == file_row {
+                            draw_cursor(
+                                &painter,
+                                text_origin,
+                                &galley,
+                                snapshot.cursor_col,
+                                col_start,
+                                text_cols,
+                                cursor_color,
+                            );
+                        }
+
+                        current_y += row_height;
+                    }
+                } else {
+                    for file_row in first_line..last_line {
+                        let line = self.core.buffer().line(file_row);
+                        let line_start = self.core.buffer().char_offset_for(file_row, 0);
+                        let (job, next_block_comment) = line_layout_job(
+                            &line,
+                            snapshot.file_ext.as_deref(),
+                            self.core.theme(),
+                            FontId::monospace(row_height - 2.0),
+                            text_color,
+                            search_bg,
+                            snapshot.search_match,
+                            line_start,
                             snapshot.col_offset,
                             text_cols,
-                            cursor_color,
+                            in_block_comment,
+                            false,
+                            rect.width() - PANEL_PADDING * 2.0 - gutter_px,
                         );
-                    }
+                        in_block_comment = next_block_comment;
 
-                    // Advance Y position for next row - use galley height when soft wrapping
-                    // so that wrapped lines don't overlap with the next buffer row
-                    if snapshot.soft_wrap {
-                        current_y += galley.size().y;
-                    } else {
+                        let galley = painter.layout_job(job);
+                        let line_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.left() + PANEL_PADDING, current_y),
+                            Vec2::new(rect.width() - PANEL_PADDING * 2.0, row_height),
+                        );
+                        if snapshot.cursor_row == file_row {
+                            painter.rect_filled(line_rect, 2.0, current_line_bg);
+                        }
+
+                        let text_origin = egui::pos2(text_x, current_y);
+                        painter.galley(text_origin, galley.clone(), text_color);
+
+                        if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) =
+                            selection_range
+                        {
+                            if file_row >= sel_start_row && file_row <= sel_end_row {
+                                let line_len = self.core.buffer().line_len(file_row);
+                                let line_sel_start = if file_row == sel_start_row {
+                                    sel_start_col
+                                } else {
+                                    0
+                                };
+                                let line_sel_end = if file_row == sel_end_row {
+                                    sel_end_col
+                                } else {
+                                    line_len
+                                };
+
+                                let visible_start = line_sel_start.max(snapshot.col_offset);
+                                let visible_end =
+                                    line_sel_end.min(snapshot.col_offset.saturating_add(text_cols));
+
+                                if visible_start < visible_end {
+                                    let start_cursor = CCursor::new(
+                                        visible_start.saturating_sub(snapshot.col_offset),
+                                    );
+                                    let end_cursor =
+                                        CCursor::new(visible_end.saturating_sub(snapshot.col_offset));
+                                    let start_rect = galley.pos_from_cursor(start_cursor);
+                                    let end_rect = galley.pos_from_cursor(end_cursor);
+                                    let sel_rect = egui::Rect::from_min_size(
+                                        egui::pos2(
+                                            text_origin.x + start_rect.min.x,
+                                            text_origin.y + start_rect.min.y,
+                                        ),
+                                        Vec2::new(
+                                            (end_rect.min.x - start_rect.min.x).max(2.0),
+                                            start_rect.height().max(row_height),
+                                        ),
+                                    );
+                                    painter.rect_filled(sel_rect, 1.0, selection_bg);
+                                }
+                            }
+                        }
+
+                        if snapshot.cursor_row == file_row {
+                            draw_cursor(
+                                &painter,
+                                text_origin,
+                                &galley,
+                                snapshot.cursor_col,
+                                snapshot.col_offset,
+                                text_cols,
+                                cursor_color,
+                            );
+                        }
+
                         current_y += row_height;
                     }
                 }
 
-                if last_line < first_line + visible_rows {
+                if snapshot.soft_wrap {
+                    if last_visual_row < first_visual_row + visible_rows {
+                        for _ in 0..(first_visual_row + visible_rows - last_visual_row) {
+                            if snapshot.show_line_numbers {
+                                let blank: String = " ".repeat(gutter_chars);
+                                painter.text(
+                                    egui::pos2(gutter_x, current_y),
+                                    Align2::LEFT_TOP,
+                                    blank,
+                                    FontId::monospace(row_height - 2.0),
+                                    gutter_color,
+                                );
+                            }
+                            painter.text(
+                                egui::pos2(text_x, current_y),
+                                Align2::LEFT_TOP,
+                                "~",
+                                FontId::monospace(row_height - 2.0),
+                                Color32::from_rgb(0, 255, 255), // DarkCyan equivalent
+                            );
+                            current_y += row_height;
+                        }
+                    }
+                } else if last_line < first_line + visible_rows {
                     for _ in 0..(first_line + visible_rows - last_line) {
                         if snapshot.show_line_numbers {
                             let blank: String = " ".repeat(gutter_chars);
